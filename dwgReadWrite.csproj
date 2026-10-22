@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>dwgReadWrite</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="D:/soft/ACadSharpTransformertest/ACadSharp/src/ACadSharp/ACadSharp.csproj" />
+  </ItemGroup>
+  <!-- F 步解析 accoreconsole 的 .adt（GBK）审计报告需 GBK 编码。
+       本项目 InvariantGlobalization=true，GBK 不在默认编码集，须在代码中
+       Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)。
+       System.Text.Encoding.CodePages 在 .NET 框架中自动可用（无需显式 PackageReference，
+       显式引用会触发 NU1510 警告），故此处不引用，直接调用框架程序集。 -->
+
+  <ItemGroup>
+    <None Include="sample.dwg" CopyToOutputDirectory="PreserveNewest" Condition="Exists('sample.dwg')" />
+  </ItemGroup>
+
+</Project>
