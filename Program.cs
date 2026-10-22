@@ -1,32 +1,33 @@
-// dwgReadWrite —— ACadSharp 坐标系变换 + 全版本 DWG 保存 + 逐类克隆 + 各种模式读写
+// dwgReadWrite -- ACadSharp coordinate transform + all-version DWG save + per-class clone + various read/write modes
 //
-// 本程序是 sample.dwg 的"读写全模式 + 逐类克隆"实验台（测试工程，不纳入 git 提交）。
+// This program is a "read/write all modes + per-class clone" experiment bench for sample.dwg (test project, not committed to git).
 //
-// 默认（无参数）流程：
-//   1) 读取 sample.dwg；
-//   2) 对模型空间所有实体做一次坐标系变换（缩放 + 绕原点旋转 + 平移）；
-//   3) 保存为「所有支持的 DWG 版本」（AC1014~AC1032，共 7 个）；
-//   4) 回读校验各版本实体数；
-//   5) 全量克隆到全新 DWG（单文件）；
-//   6) 逐类克隆：模型空间每种实体类型各自 Clone 到一个全新空白 DWG，各存一个文件
-//      （保持关联：Layer/Block/Style/TableStyle 一并克隆重注册）；
-//   7) 关联丢弃验证：Insert 单独克隆（置空 Block）验证"只克隆一个默认丢关联"。
+// Default (no-args) pipeline:
+//   1) Read sample.dwg;
+//   2) Apply one coordinate transform (scale + rotate about the origin + translate) to all model-space entities;
+//   3) Save as "all supported DWG versions" (AC1014~AC1032, 7 in total);
+//   4) Read back and verify the entity count of each version;
+//   5) Full clone into a brand-new DWG (single file);
+//   6) Per-class clone: for each entity type in model space, clone that type into its own brand-new blank DWG, one file each
+//      (keep associations: Layer/Block/Style/TableStyle are cloned and re-registered together);
+//   7) Association-drop verification: clone a single Insert alone (Block set to null) to verify "cloning one entity alone drops its associations by default".
 //
-// 命令行模式（恢复自被删的 CadTransformer 实验代码）：
-//   dwgReadWrite <模式> [参数...]
-//     empty <版本> [out.dwg]            写指定版本空文档
-//     rt <in.dwg> <out.dwg> [版本]       纯往返（不做坐标变换）
-//     stripvp <NEW|in.dwg> <out.dwg> [版本]  剥离所有视口后写出
-//     dump <file.dwg>                   对象清单直方图（含视口/Insert 详情）
-//     classes <file.dwg>                类表转储
-//     objinfo <file.dwg|dxf> <0x..> [..|all]  按句柄查对象
-//     layoutdump <file.dwg|dxf>         布局/视口/HANDSEED 内存状态直方图
-//     dimstyles <file.dwg>              标注样式与标注引用
-//     inspect <file.dwg> [0x..]         Table/Insert/ATT 状态直方图 + 按句柄查
-//     inspecthatch <file.dwg>           HATCH 渐变/XDATA 明细
-//     inspectdim <file.dwg>             标注关联（DIMASSOC）链路检查
-//     iobench                          IO 性能基准（流式读写/增量保存/并行解码/惰性加载/进度事件，默认流程第⑨步）
-//   （不带模式参数则执行上面的默认流程；首个参数若为文件路径也走默认流程）
+// Command-line modes (restored from the deleted CadTransformer experiment code):
+//   dwgReadWrite <mode> [args...]
+//     empty <version> [out.dwg]            Write an empty document of the given version
+//     rt <in.dwg> <out.dwg> [version]       Pure round-trip (no coordinate transform)
+//     stripvp <NEW|in.dwg> <out.dwg> [version]  Strip all viewports, then write out
+//     dump <file.dwg>                   Object histogram (including viewport/Insert details)
+//     classes <file.dwg>                Class table dump
+//     objinfo <file.dwg|dxf> <0x..> [..|all]  Look up objects by handle
+//     layoutdump <file.dwg|dxf>         Layout/viewport/HANDSEED in-memory state histogram
+//     dimstyles <file.dwg>              Dimension styles and dimension references
+//     inspect <file.dwg> [0x..]         Table/Insert/ATT state histogram + lookup by handle
+//     inspecthatch <file.dwg>           HATCH gradient/XDATA details
+//     inspectdim <file.dwg>             Dimension association (DIMASSOC) chain check
+//     iobench                          IO performance benchmark (streaming read/write / incremental save / parallel decode / lazy load / progress events; step (9) of the default pipeline)
+//     readbench [in.dwg] [N] [noid]    DWG read phase-breakdown benchmark (decode vs build sub-phases; default io_bench/bench_io.dwg x5)
+//   (With no mode argument the default pipeline above runs; if the first argument is a file path, the default pipeline also runs)
 
 using System;
 using System.Collections.Generic;
@@ -49,12 +50,12 @@ using CSMath;
 
 internal static class Program
 {
-    // ---------- 坐标系变换参数（缩放 / 旋转 / 平移） ----------
+    // ---------- Coordinate transform parameters (scale / rotate / translate) ----------
     private static readonly XYZ  TransformScale     = new XYZ(1.5, 1.5, 1.5);
     private static readonly double TransformAngleDeg = 30.0;
     private static readonly XYZ  TransformTranslate = new XYZ(1000.0, 500.0, 0);
 
-    // ---------- 支持的 DWG 写版本（DwgWriter 实际可写集：AC1014~AC1032 共 7 个） ----------
+    // ---------- Supported DWG write versions (the set DwgWriter can actually write: AC1014~AC1032, 7 in total) ----------
     private static readonly (string Name, ACadVersion Version)[] SupportedVersions =
     {
         ("R14/AC1014",   ACadVersion.AC1014),
@@ -76,71 +77,71 @@ internal static class Program
         string baseDir = AppContext.BaseDirectory;
         string samplePath = Path.Combine(baseDir, "sample.dwg");
 
-        // ---------- 模式分派（恢复的"各种模式"读写） ----------
+        // ---------- Mode dispatch (restored "various modes" read/write) ----------
         if (args.Length > 0)
         {
             string mode = args[0];
             if (TryRunMode(mode, args, baseDir, samplePath))
                 return;
-            // 模式未命中（例如首个参数是文件路径）→ 走默认流程
+            // No mode matched (e.g. the first argument is a file path) -> run the default pipeline
         }
 
         RunDefaultPipeline(samplePath, baseDir);
         PrintReport();
-        Console.WriteLine("\n完成。");
+        Console.WriteLine("\nDone.");
     }
 
-    // ================= 默认流程：变换 + 全版本保存 + 全量克隆 + 逐类克隆 =================
+    // ================= Default pipeline: transform + all-version save + full clone + per-class clone =================
     private static void RunDefaultPipeline(string samplePath, string baseDir)
     {
         Console.WriteLine("==========================================================");
-        Console.WriteLine("  ACadSharp 坐标系变换 + 全版本 DWG 保存 + 逐类克隆");
-        Console.WriteLine($"  变换 = 缩放 {TransformScale.X}×{TransformScale.Y}×{TransformScale.Z}" +
-                          $"  旋转 {TransformAngleDeg}°(绕Z)  平移 ({TransformTranslate.X},{TransformTranslate.Y},{TransformTranslate.Z})");
-        Console.WriteLine($"  支持版本 = {string.Join(", ", SupportedVersions.Select(v => v.Version))}");
-        Console.WriteLine($"  运行时间 = {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine("  ACadSharp coordinate transform + all-version DWG save + per-class clone");
+        Console.WriteLine($"  Transform = scale {TransformScale.X}x{TransformScale.Y}x{TransformScale.Z}" +
+                          $"  rotate {TransformAngleDeg} (about Z)  translate ({TransformTranslate.X},{TransformTranslate.Y},{TransformTranslate.Z})");
+        Console.WriteLine($"  Supported versions = {string.Join(", ", SupportedVersions.Select(v => v.Version))}");
+        Console.WriteLine($"  Run time = {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         Console.WriteLine("==========================================================\n");
 
         if (!File.Exists(samplePath))
         {
-            Console.Error.WriteLine($"❌ 找不到 sample.dwg：{samplePath}");
+            Console.Error.WriteLine($"❌ sample.dwg not found: {samplePath}");
             return;
         }
 
-        // ---------- ① 读取 sample.dwg ----------
+        // ---------- (1) Read sample.dwg ----------
         var readSw = Stopwatch.StartNew();
         long readWsStart = WsMB();
         CadDocument doc;
-        Console.WriteLine("▶ [读取] sample.dwg");
+        Console.WriteLine("▶ [Read] sample.dwg");
         try
         {
             var reader = new DwgReader(samplePath)
             {
                 Configuration = new DwgReaderConfiguration { ReadSummaryInfo = true }
             };
-            reader.OnProgress += (s, e) => ProgressBar("读取", e.Completed, e.Total);
+            reader.OnProgress += (s, e) => ProgressBar("Reading", e.Completed, e.Total);
             doc = reader.Read();
             readSw.Stop();
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"❌ 读取失败：{ex}");
+            Console.Error.WriteLine($"❌ Read failed: {ex}");
             return;
         }
         long readWsEnd = WsMB();
         int modelCount = doc.ModelSpace.Entities.Count;
         Console.WriteLine();
-        Console.WriteLine($"  ✅ 读取完成：版本={doc.Header.Version}，模型空间实体={modelCount:N0}，块={doc.BlockRecords.Count}，图层={doc.Layers.Count}");
-        Console.WriteLine($"  读取耗时={readSw.ElapsedMilliseconds:N0} ms，内存 {readWsStart:N0}→{readWsEnd:N0} MB\n");
-        _results.Add(new MethodResult("读取 sample.dwg", readSw.ElapsedMilliseconds, readWsStart, readWsEnd, 0, "OK"));
+        Console.WriteLine($"  ✅ Read done: version={doc.Header.Version}, model-space entities={modelCount:N0}, blocks={doc.BlockRecords.Count}, layers={doc.Layers.Count}");
+        Console.WriteLine($"  Read elapsed={readSw.ElapsedMilliseconds:N0} ms, memory {readWsStart:N0}->{readWsEnd:N0} MB\n");
+        _results.Add(new MethodResult("Read sample.dwg", readSw.ElapsedMilliseconds, readWsStart, readWsEnd, 0, "OK"));
 
-        // ---------- ② 逐类克隆（变换前，针对原始实体做"保持关联"克隆，各存一文件） ----------
+        // ---------- (2) Per-class clone (before the transform: "keep associations" clone of the original entities, one file each) ----------
         RunPerClassClone(doc, baseDir);
 
-        // ---------- ③ 关联丢弃验证（Insert 置空 Block） ----------
+        // ---------- (3) Association-drop verification (Insert with Block set to null) ----------
         RunDropAssociationTest(doc, baseDir);
 
-        // ---------- ④ 坐标系变换 ----------
+        // ---------- (4) Coordinate transform ----------
         var tfSw = Stopwatch.StartNew();
         long tfWsStart = WsMB();
         double angleRad = TransformAngleDeg * Math.PI / 180.0;
@@ -149,71 +150,72 @@ internal static class Program
             e.ApplyTransform(t);
         tfSw.Stop();
         long tfWsEnd = WsMB();
-        Console.WriteLine($"▶ [变换] 对 {modelCount:N0} 个模型空间实体施加坐标系变换");
-        Console.WriteLine($"  ✅ 变换完成：耗时={tfSw.ElapsedMilliseconds:N0} ms，内存 {tfWsStart:N0}→{tfWsEnd:N0} MB\n");
-        _results.Add(new MethodResult("坐标系变换", tfSw.ElapsedMilliseconds, tfWsStart, tfWsEnd, 0, "OK"));
+        Console.WriteLine($"▶ [Transform] Apply the coordinate transform to {modelCount:N0} model-space entities");
+        Console.WriteLine($"  ✅ Transform done: elapsed={tfSw.ElapsedMilliseconds:N0} ms, memory {tfWsStart:N0}->{tfWsEnd:N0} MB\n");
+        _results.Add(new MethodResult("Coordinate transform", tfSw.ElapsedMilliseconds, tfWsStart, tfWsEnd, 0, "OK"));
 
-        // ---------- ⑤ 重算模型空间范围 ----------
+        // ---------- (5) Recompute the model space extents ----------
         SetModelExtentsFromEntities(doc);
 
-        // ---------- ⑥ 保存为所有支持的 DWG 版本 ----------
-        Console.WriteLine($"▶ [保存] 逐版本写出 {SupportedVersions.Length} 个 DWG（同一份已变换文档）");
+        // ---------- (6) Save as all supported DWG versions ----------
+        Console.WriteLine($"▶ [Save] Write {SupportedVersions.Length} DWGs, one per version (the same transformed document)");
         foreach (var v in SupportedVersions)
             SaveVersion(v.Name, v.Version, doc, baseDir);
         Console.WriteLine();
 
-        // ---------- ⑦ 回读校验各版本实体数 ----------
-        Console.WriteLine("▶ [回读校验] 各版本产物实体数（应≈变换前实体数）");
+        // ---------- (7) Read back and verify the entity count of each version ----------
+        Console.WriteLine("▶ [Readback check] Entity counts of the per-version outputs (should be ~ the pre-transform entity count)");
         ValidateOutputs(baseDir, modelCount);
 
-        // ---------- ⑧ 全量克隆到全新 DWG（单文件） ----------
+        // ---------- (8) Full clone into a brand-new DWG (single file) ----------
         RunFullCloneTest(samplePath, baseDir);
 
-        // ---------- ⑨ IO 性能基准（流式读写 / 增量保存 / 并行解码 / 惰性加载 / 进度事件） ----------
+        // ---------- (9) IO performance benchmark (streaming read/write / incremental save / parallel decode / lazy load / progress events) ----------
         RunIoBench(baseDir);
     }
 
-    // ================= 单版本保存 =================
+    // ================= Single-version save =================
     private static void SaveVersion(string name, ACadVersion version, CadDocument doc, string baseDir)
     {
         string outPath = Path.Combine(baseDir, $"out_{name.Replace('/', '_')}.dwg");
         long ws0 = WsMB();
         var sw = Stopwatch.StartNew();
-        Console.WriteLine($"  ▶ {name,-14} → {Path.GetFileName(outPath)}");
+        Console.WriteLine($"  ▶ {name,-14} -> {Path.GetFileName(outPath)}");
         try
         {
             doc.Header.Version = version;
             var writer = new DwgWriter(outPath, doc) { Configuration = new DwgWriterConfiguration() };
-            // 写进度条：与读端 OnProgress 进度条镜像（按 SaveProgressReportInterval 节流触发，Completed==Total 时保证触发一次 100%）
-            writer.OnSaveProgress += (s, e) => ProgressBar("写入", e.Completed, e.Total);
+            // Write progress bar: a mirror of the reader-side OnProgress bar
+            // (throttled by SaveProgressReportInterval; guaranteed to fire once at 100% when Completed==Total)
+            writer.OnSaveProgress += (s, e) => ProgressBar("Writing", e.Completed, e.Total);
             writer.Write();
             writer.Dispose();
             sw.Stop();
             long ws1 = WsMB();
             long sz = new FileInfo(outPath).Length;
             Console.WriteLine();
-            Console.WriteLine($"      ✅ {sw.ElapsedMilliseconds:N0} ms，内存 {ws0:N0}→{ws1:N0} MB，产物 {sz / 1024.0 / 1024.0:F2} MB");
-            _results.Add(new MethodResult($"保存 {name}", sw.ElapsedMilliseconds, ws0, ws1, sz, "OK"));
+            Console.WriteLine($"      ✅ {sw.ElapsedMilliseconds:N0} ms, memory {ws0:N0}->{ws1:N0} MB, output {sz / 1024.0 / 1024.0:F2} MB");
+            _results.Add(new MethodResult($"Save {name}", sw.ElapsedMilliseconds, ws0, ws1, sz, "OK"));
         }
         catch (CadNotSupportedException ex)
         {
             sw.Stop();
-            Console.WriteLine($"      ⚠️  不支持：{ex.Message}");
-            _results.Add(new MethodResult($"保存 {name}", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "UNSUPPORTED"));
+            Console.WriteLine($"      ⚠️  Not supported: {ex.Message}");
+            _results.Add(new MethodResult($"Save {name}", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "UNSUPPORTED"));
         }
         catch (Exception ex)
         {
             sw.Stop();
-            Console.WriteLine($"      ❌ 失败：{ex.Message}");
-            _results.Add(new MethodResult($"保存 {name}", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "FAIL"));
+            Console.WriteLine($"      ❌ Failed: {ex.Message}");
+            _results.Add(new MethodResult($"Save {name}", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "FAIL"));
         }
     }
 
-    // ================= 全量克隆（读整图对象图 → 写新文件） =================
+    // ================= Full clone (read the whole object graph -> write a new file) =================
     private static void RunFullCloneTest(string samplePath, string baseDir)
     {
         string outPath = Path.Combine(baseDir, "out_fullclone.dwg");
-        Console.WriteLine("\n▶ [克隆] 全量克隆 sample.dwg → 新文件 " + Path.GetFileName(outPath));
+        Console.WriteLine("\n▶ [Clone] Full clone sample.dwg -> new file " + Path.GetFileName(outPath));
         var sw = Stopwatch.StartNew();
         long ws0 = WsMB();
         try
@@ -222,7 +224,7 @@ internal static class Program
             CadDocument src = reader.Read();
             sw.Stop();
             long ws1 = WsMB();
-            Console.WriteLine($"  ① 打开完成：版本={src.Header.Version}，实体={src.Entities.Count:N0}，块={src.BlockRecords.Count:N0}，图层={src.Layers.Count:N0}");
+            Console.WriteLine($"  (1) Opened: version={src.Header.Version}, entities={src.Entities.Count:N0}, blocks={src.BlockRecords.Count:N0}, layers={src.Layers.Count:N0}");
 
             var sw2 = Stopwatch.StartNew();
             long ws2 = WsMB();
@@ -232,41 +234,42 @@ internal static class Program
             sw2.Stop();
             long ws3 = WsMB();
             long sz = new FileInfo(outPath).Length;
-            Console.WriteLine($"  ② 克隆写出完成：耗时={sw2.ElapsedMilliseconds:N0} ms，内存 {ws2:N0}→{ws3:N0} MB，产物 {sz / 1024.0 / 1024.0:F2} MB");
-            _results.Add(new MethodResult("全量克隆(读)", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
-            _results.Add(new MethodResult("全量克隆(写)", sw2.ElapsedMilliseconds, ws2, ws3, sz, "OK"));
+            Console.WriteLine($"  (2) Clone write done: elapsed={sw2.ElapsedMilliseconds:N0} ms, memory {ws2:N0}->{ws3:N0} MB, output {sz / 1024.0 / 1024.0:F2} MB");
+            _results.Add(new MethodResult("Full clone (read)", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
+            _results.Add(new MethodResult("Full clone (write)", sw2.ElapsedMilliseconds, ws2, ws3, sz, "OK"));
 
             CadDocument rb = new DwgReader(outPath).Read();
             bool ok = rb.Entities.Count == src.Entities.Count
                       && rb.ModelSpace.Entities.Count == src.ModelSpace.Entities.Count
                       && rb.BlockRecords.Count == src.BlockRecords.Count
                       && rb.Layers.Count == src.Layers.Count;
-            Console.WriteLine($"  ③ 回读校验：实体={rb.Entities.Count:N0}（源 {src.Entities.Count:N0}） 块={rb.BlockRecords.Count:N0}（源 {src.BlockRecords.Count:N0}） {(ok ? "✅ 一致" : "⚠️ 不一致")}");
-            if (!ok) _results.Add(new MethodResult("全量克隆(校验)", 0, 0, 0, 0, "MISMATCH"));
+            Console.WriteLine($"  (3) Readback check: entities={rb.Entities.Count:N0} (source {src.Entities.Count:N0}), blocks={rb.BlockRecords.Count:N0} (source {src.BlockRecords.Count:N0}) {(ok ? "✅ match" : "⚠️ mismatch")}");
+            if (!ok) _results.Add(new MethodResult("Full clone (check)", 0, 0, 0, 0, "MISMATCH"));
             Console.WriteLine();
         }
         catch (Exception ex)
         {
             sw.Stop();
-            Console.Error.WriteLine($"  ❌ 克隆失败：{ex}");
-            _results.Add(new MethodResult("全量克隆", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "FAIL"));
+            Console.Error.WriteLine($"  ❌ Clone failed: {ex}");
+            _results.Add(new MethodResult("Full clone", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "FAIL"));
             Console.WriteLine();
         }
     }
 
-    // ================= 逐类克隆：每种实体类型 → 一个全新空白 DWG（保持关联） =================
+    // ================= Per-class clone: each entity type -> a brand-new blank DWG (keep associations) =================
     /// <summary>
-    /// 把模型空间的每种实体类型分别 Clone 到一个全新空白 DWG，各存一个文件。
-    /// 关联保持：实体的 Layer/Block/Style/TableStyle 等引用一并克隆并重注册进新文档，
-    /// 避免跨文档悬空指针（这是"两个数据都克隆要保持关联"的需求）。
+    /// Clone each entity type in model space into its own brand-new blank DWG, one file each.
+    /// Association preservation: the entity's Layer/Block/Style/TableStyle references are cloned
+    /// together and re-registered in the new document, avoiding dangling cross-document pointers
+    /// (this is the "clone both data sets but keep the associations" requirement).
     /// </summary>
     private static void RunPerClassClone(CadDocument src, string baseDir)
     {
         Console.WriteLine("\n" + new string('=', 80));
-        Console.WriteLine("▶ [逐类克隆] 模型空间按实体类型分组，每类克隆到一个全新空白 DWG（保持关联）");
+        Console.WriteLine("▶ [Per-class clone] Group model space by entity type; clone each type into a brand-new blank DWG (keep associations)");
         Console.WriteLine(new string('=', 80));
 
-        // 按运行时类型分组（保持出现顺序）
+        // Group by runtime type (preserve order of appearance)
         var groups = new List<(string TypeName, List<Entity> Items)>();
         var index = new Dictionary<Type, int>();
         foreach (Entity e in src.ModelSpace.Entities)
@@ -285,7 +288,7 @@ internal static class Program
 
         string outDir = Path.Combine(baseDir, "per_class");
         Directory.CreateDirectory(outDir);
-        Console.WriteLine($"  共 {groups.Count} 种实体类型，输出目录：{outDir}\n");
+        Console.WriteLine($"  {groups.Count} entity types in total, output dir: {outDir}\n");
 
         int okCount = 0, failCount = 0;
         foreach (var (typeName, items) in groups)
@@ -296,12 +299,14 @@ internal static class Program
             try
             {
                 CadDocument dst = new CadDocument();
-                dst.Header.Version = src.Header.Version;   // 与源同版本，便于对比
-                // [FIX] R2004 及更早版本的 DWG 按文档代码页写字符串；不复制 CodePage 时
-                // 新文档默认 ANSI_1252，中文（文本、线型文字段等）全部变成 '?'。
+                dst.Header.Version = src.Header.Version;   // Same version as the source, for easy comparison
+                // [FIX] DWGs of R2004 and earlier write strings using the document code page;
+                // without copying CodePage the new document defaults to ANSI_1252 and all
+                // Chinese (text, linetype text fields, etc.) becomes '?'.
                 dst.Header.CodePage = src.Header.CodePage;
 
-                // [PATCH] 先按"源内容优先"预填命名表，再克隆实体（解决默认条目名称冲突吞掉源内容）
+                // [PATCH] Preseed the named tables with "source content wins" before cloning the entities
+                // (fixes default entries whose names collide and swallow the source content)
                 PreseedTables(src, dst);
 
                 int added = 0;
@@ -316,7 +321,7 @@ internal static class Program
                 writer.Dispose();
                 long sz = new FileInfo(outPath).Length;
 
-                // 回读校验
+                // Readback check
                 string rbStatus;
                 int rbModel = -1, rbBlocks = -1;
                 try
@@ -333,32 +338,33 @@ internal static class Program
 
                 bool good = added == items.Count && rbStatus == "OK";
                 if (good) okCount++; else failCount++;
-                Console.WriteLine($"  [{(good ? "✅" : "⚠️")}] {typeName,-22} 克隆={added}/{items.Count}  回读模型={rbModel} 块={rbBlocks}  产物={sz / 1024.0:F0}KB  {sw.ElapsedMilliseconds:N0}ms  {rbStatus}");
-                _results.Add(new MethodResult($"逐类 {typeName}", sw.ElapsedMilliseconds, 0, 0, sz, good ? "OK" : "CHECK"));
+                Console.WriteLine($"  [{(good ? "✅" : "⚠️")}] {typeName,-22} cloned={added}/{items.Count}  readback model={rbModel} blocks={rbBlocks}  output={sz / 1024.0:F0}KB  {sw.ElapsedMilliseconds:N0}ms  {rbStatus}");
+                _results.Add(new MethodResult($"Per-class {typeName}", sw.ElapsedMilliseconds, 0, 0, sz, good ? "OK" : "CHECK"));
             }
             catch (Exception ex)
             {
                 sw.Stop();
                 failCount++;
-                Console.WriteLine($"  [❌] {typeName,-22} 失败：{Trunc(ex.Message, 60)}");
-                _results.Add(new MethodResult($"逐类 {typeName}", sw.ElapsedMilliseconds, 0, 0, 0, "FAIL"));
+                Console.WriteLine($"  [❌] {typeName,-22} failed: {Trunc(ex.Message, 60)}");
+                _results.Add(new MethodResult($"Per-class {typeName}", sw.ElapsedMilliseconds, 0, 0, 0, "FAIL"));
             }
         }
 
-        Console.WriteLine($"\n  逐类克隆小结：成功 {okCount} / 需关注 {failCount}（共 {groups.Count} 类）");
+        Console.WriteLine($"\n  Per-class clone summary: success {okCount} / needs attention {failCount} ({groups.Count} types in total)");
         Console.WriteLine();
     }
 
-    // ================= 关联丢弃验证：Insert 置空 Block =================
+    // ================= Association-drop verification: Insert with Block set to null =================
     /// <summary>
-    /// 验证"只克隆一个时默认丢掉关联"：把 Insert 单独克隆到新空白文档，
-    /// 通过反射置空其 Block（Insert.Block 为 internal setter），再写出回读，
-    /// 观察块引用被丢弃后的产物状态。
+    /// Verify that "cloning one entity alone drops its associations by default": clone a single
+    /// Insert into a new blank document, use reflection to null out its Block (Insert.Block has an
+    /// internal setter), then write it out and read it back to observe the output state after the
+    /// block reference has been dropped.
     /// </summary>
     private static void RunDropAssociationTest(CadDocument src, string baseDir)
     {
         Console.WriteLine(new string('=', 80));
-        Console.WriteLine("▶ [关联丢弃] Insert 单独克隆并置空 Block（只克隆一个 → 默认丢关联）");
+        Console.WriteLine("▶ [Association drop] Clone a single Insert and null out its Block (clone one alone -> associations dropped by default)");
         Console.WriteLine(new string('=', 80));
 
         Insert firstInsert = null;
@@ -367,7 +373,7 @@ internal static class Program
 
         if (firstInsert == null)
         {
-            Console.WriteLine("  （样本中无普通 Insert，跳过）");
+            Console.WriteLine("  (No plain Insert in the sample; skipping)");
             return;
         }
         string outPath = Path.Combine(baseDir, "drop_insert_block.dwg");
@@ -378,8 +384,8 @@ internal static class Program
             dst.Header.Version = src.Header.Version;
 
             Entity clone = (Entity)firstInsert.Clone();
-            SetInsertBlock(clone, null);           // 反射置空 Block → 丢关联
-            dst.ModelSpace.Entities.Add(clone);    // 触发 AssignDocument（Block=null 时跳过块重注册）
+            SetInsertBlock(clone, null);           // Reflection: null out Block -> drop the association
+            dst.ModelSpace.Entities.Add(clone);    // Triggers AssignDocument (block re-registration is skipped when Block=null)
 
             var writer = new DwgWriter(outPath, dst) { Configuration = new DwgWriterConfiguration() };
             writer.Write();
@@ -396,48 +402,55 @@ internal static class Program
             }
             catch (Exception rex) { rbModel = -1; rbBlock = "READFAIL"; }
 
-            Console.WriteLine($"  源 Insert block={srcBlockName} → 置空后写出 {sz / 1024.0:F0}KB，回读模型={rbModel} 块引用={rbBlock}");
-            _results.Add(new MethodResult("关联丢弃(Insert)", 0, 0, 0, sz, "OK"));
+            Console.WriteLine($"  Source Insert block={srcBlockName} -> after nulling, wrote {sz / 1024.0:F0}KB, readback model={rbModel} block ref={rbBlock}");
+            _results.Add(new MethodResult("Association drop (Insert)", 0, 0, 0, sz, "OK"));
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"  ❌ 关联丢弃测试失败：{Trunc(ex.Message, 60)}");
-            _results.Add(new MethodResult("关联丢弃(Insert)", 0, 0, 0, 0, "FAIL"));
+            Console.WriteLine($"  ❌ Association-drop test failed: {Trunc(ex.Message, 60)}");
+            _results.Add(new MethodResult("Association drop (Insert)", 0, 0, 0, 0, "FAIL"));
         }
         Console.WriteLine();
     }
 
-    // ================= 依赖重注册（保持关联的核心） =================
+    // ================= Dependency re-registration (the core of keeping associations) =================
     /// <summary>
-    /// 把 src 文档中的一个实体 Clone 到 dst 文档，保持关联。
-    /// 原理：Clone() 已自动 detach Layer/LineType/Block/Style（fresh clones, Document=null）；
-    /// 加入 dst 触发 AssignDocument 时自动按名重注册全部引用（Layer/LineType/Block/Style/TableStyle），
-    /// 无需手动逐个克隆依赖。
-    /// 返回加入 dst 的实体。
+    /// Clone one entity from the src document into the dst document, keeping its associations.
+    /// How it works: Clone() has already detached Layer/LineType/Block/Style automatically (fresh
+    /// clones, Document=null); adding the entity to dst triggers AssignDocument, which re-registers
+    /// every reference by name (Layer/LineType/Block/Style/TableStyle) automatically, so no manual
+    /// per-dependency cloning is needed.
+    /// Returns the entity added to dst.
     /// </summary>
     private static Entity CloneWithDeps(CadDocument src, CadDocument dst, Entity srcEntity)
     {
-        // 关键：先克隆源实体 → Owner=null, Document=null, Layer/LineType/Block/Style 均为 detached 副本
+        // Key: clone the source entity first -> Owner=null, Document=null, and Layer/LineType/Block/Style
+        // are all detached copies
         Entity e = (Entity)srcEntity.Clone();
 
-        // 加入 dst 模型空间 → 触发 onAdd → AddCadObject → AssignDocument(dst)
-        // AssignDocument 链自动处理：
-        //   Entity.AssignDocument  → updateTableEntry(Layer, LineType, dst) 按名注册
-        //   Insert.AssignDocument  → BlockRecords.TryGetValue/Add 按名复用或新增
-        //   Dimension.AssignDocument → updateTableEntry(Style, Block, dst) 按名注册
-        //   TableEntity.AssignDocument → updateCollectionEntry(Content.Style, dst.TableStyles)
-        //   BlockRecord.AssignDocument → RegisterCollection(Entities) → 块内实体逐一 AssignDocument
+        // Add to the dst model space -> triggers onAdd -> AddCadObject -> AssignDocument(dst)
+        // The AssignDocument chain handles it automatically:
+        //   Entity.AssignDocument  -> updateTableEntry(Layer, LineType, dst) registers by name
+        //   Insert.AssignDocument  -> BlockRecords.TryGetValue/Add reuses or adds by name
+        //   Dimension.AssignDocument -> updateTableEntry(Style, Block, dst) registers by name
+        //   TableEntity.AssignDocument -> updateCollectionEntry(Content.Style, dst.TableStyles)
+        //   BlockRecord.AssignDocument -> RegisterCollection(Entities) -> AssignDocument each entity in the block
         dst.ModelSpace.Entities.Add(e);
         return e;
     }
 
     /// <summary>
-    /// [PATCH] 克隆实体之前，把源文档各命名表的条目克隆进目标文档（同名冲突时源内容优先，
-    /// 覆盖目标文档构造时自动生成的默认占位条目，如 TextStyle "Standard"、MLineStyle "Standard"）。
-    /// 规则（用户确认）：原文档存在名称冲突时，以原文档内容优先级高。
-    /// 必须克隆而不是移动：同一 src 还会被克隆出多个 dst（逐类基准），移动会破坏源文档。
-    /// 顺序：被引用者先入表（TextStyle/LineType/Layer/DimensionStyle），引用者后入表
-    /// （TableStyle/MLineStyle/MLeaderStyle），后者的 AssignDocument 按名重新注册内部引用。
+    /// [PATCH] Before cloning the entities, clone the entries of each named table from the source
+    /// document into the target document (when names collide, source content wins, overriding the
+    /// default placeholder entries auto-generated when the target document was constructed, e.g.
+    /// TextStyle "Standard" and MLineStyle "Standard").
+    /// Rule (confirmed by the user): when the original document has a name collision, the original
+    /// document's content takes priority.
+    /// Must clone, not move: the same src is cloned into multiple dsts (per-class benchmark); moving
+    /// would corrupt the source document.
+    /// Order: referenced entries enter the tables first (TextStyle/LineType/Layer/DimensionStyle),
+    /// the referencing entries enter later (TableStyle/MLineStyle/MLeaderStyle); the latter's
+    /// AssignDocument re-registers their internal references by name.
     /// </summary>
     private static void PreseedTables(CadDocument src, CadDocument dst)
     {
@@ -461,7 +474,7 @@ internal static class Program
         preDict(src.MLeaderStyles, dst.MLeaderStyles);
     }
 
-    /// <summary>反射设置 Insert.Block（internal setter），用于"丢关联"测试。</summary>
+    /// <summary>Set Insert.Block via reflection (internal setter); used for the "drop association" test.</summary>
     private static void SetInsertBlock(Entity ins, BlockRecord block)
     {
         var prop = typeof(Insert).GetProperty("Block", BindingFlags.Public | BindingFlags.Instance);
@@ -482,7 +495,7 @@ internal static class Program
         return s.Length <= n ? s : s.Substring(0, n) + "…";
     }
 
-    // ================= 用实体真实包围盒重算模型范围 =================
+    // ================= Recompute model extents from the entities' true bounding boxes =================
     private static void SetModelExtentsFromEntities(CadDocument doc)
     {
         try
@@ -512,35 +525,35 @@ internal static class Program
         catch { }
     }
 
-    // ================= 回读校验 =================
+    // ================= Readback check =================
     private static void ValidateOutputs(string baseDir, int expected)
     {
         foreach (var v in SupportedVersions)
         {
             string p = Path.Combine(baseDir, $"out_{v.Name.Replace('/', '_')}.dwg");
-            if (!File.Exists(p)) { Console.WriteLine($"  ⚠️  缺失：{Path.GetFileName(p)}"); continue; }
+            if (!File.Exists(p)) { Console.WriteLine($"  ⚠️  Missing: {Path.GetFileName(p)}"); continue; }
             try
             {
                 var d = new DwgReader(p).Read();
                 int cnt = d.Entities.Count;
                 long sz = new FileInfo(p).Length;
                 bool ok = Math.Abs(cnt - expected) <= 2;
-                Console.WriteLine($"  {v.Name,-14} 实体={cnt:N0}（期望≈{expected:N0}） 大小={sz / 1024.0 / 1024.0:F2}MB  {(ok ? "✅" : "⚠️")}");
+                Console.WriteLine($"  {v.Name,-14} entities={cnt:N0} (expected ~{expected:N0}) size={sz / 1024.0 / 1024.0:F2}MB  {(ok ? "✅" : "⚠️")}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  {v.Name,-14} 回读失败：{ex.Message}");
+                Console.WriteLine($"  {v.Name,-14} Readback failed: {ex.Message}");
             }
         }
     }
 
-    // ================= 汇总报告 =================
+    // ================= Summary report =================
     private static void PrintReport()
     {
         Console.WriteLine("\n" + new string('=', 80));
-        Console.WriteLine("  汇总报告（时间 / 产物大小 / 状态）");
+        Console.WriteLine("  Summary report (elapsed time / output size / status)");
         Console.WriteLine(new string('=', 80));
-        Console.WriteLine($"  {"项目",-26} {"耗时(ms)",12} {"产物KB",10}  状态");
+        Console.WriteLine($"  {"Item",-26} {"Elapsed (ms)",12} {"Output KB",10}  Status");
         Console.WriteLine("  " + new string('-', 60));
         foreach (var r in _results)
         {
@@ -550,14 +563,15 @@ internal static class Program
         Console.WriteLine(new string('=', 80));
     }
 
-    // ================= ⑨ IO 性能基准：流式读写 / 增量保存 / 并行解码 / 惰性加载 / 进度事件 =================
-    // 覆盖近期读写相关提交的改动：
-    //   c8701519  DWG 增量保存（P0 脏句柄 / P1 patch-source）+ 并行序列化 + DWG 流式写 + DWG 并行解码 + 惰性部分解码
-    //   2001e83c  读/写进度事件（DwgWriter.OnSaveProgress / 读取端 OnProgress）
-    //   37adbe70  DXF 流式写 + XData 驻留 + 版本门控 DXF 读写
-    //   715fd41d  版本门控 DWG 写（R14~R2007 + AC21 原生编码器）
-    // sample.dwg 仅 0.14MB 不具代表性，故现场生成 10 万实体 + 全实体带 XData 的基准图用于所有大文件测试。
-    // 产物目录：<baseDir>/io_bench/
+    // ================= (9) IO performance benchmark: streaming read/write / incremental save / parallel decode / lazy load / progress events =================
+    // Covers the changes in recent read/write-related commits:
+    //   c8701519  DWG incremental save (P0 dirty handles / P1 patch source) + parallel serialization + DWG streaming write + DWG parallel decode + lazy partial decode
+    //   2001e83c  Read/write progress events (DwgWriter.OnSaveProgress / reader-side OnProgress)
+    //   37adbe70  DXF streaming write + XData interning + version-gated DXF read/write
+    //   715fd41d  Version-gated DWG write (R14~R2007 + AC21 native encoder)
+    // sample.dwg is only 0.14 MB and not representative, so a benchmark drawing with 100k entities
+    // (every entity carrying XData) is generated on the fly for all large-file tests.
+    // Output dir: <baseDir>/io_bench/
     private static void RunIoBench(string baseDir)
     {
         string benchDir = Path.Combine(baseDir, "io_bench");
@@ -567,13 +581,13 @@ internal static class Program
         const int N = 100_000;
 
         Console.WriteLine(new string('=', 80));
-        Console.WriteLine($"▶ [⑨ IO 性能基准] 现场生成 {N:N0} 实体基准图（全实体带 XData）→ DWG/DXF 流式读写 / 增量保存 / 并行解码 / 惰性加载 / 进度事件");
+        Console.WriteLine($"▶ [(9) IO benchmark] Generate a {N:N0}-entity benchmark drawing on the fly (all entities carry XData) -> DWG/DXF streaming read/write / incremental save / parallel decode / lazy load / progress events");
         Console.WriteLine(new string('=', 80));
 
         var sw = Stopwatch.StartNew();
         long ws0 = WsMB(), ws1;
 
-        // ---------- GEN-1 生成基准大图 ----------
+        // ---------- GEN-1 Generate the large benchmark drawing ----------
         CadDocument bench = null;
         try
         {
@@ -582,43 +596,43 @@ internal static class Program
         catch (Exception ex)
         {
             sw.Stop();
-            Console.WriteLine($"  ❌ 基准图生成失败: {Trunc(ex.Message, 80)}");
-            _results.Add(new MethodResult("[IOB] GEN 基准图生成", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "FAIL"));
+            Console.WriteLine($"  ❌ Benchmark drawing generation failed: {Trunc(ex.Message, 80)}");
+            _results.Add(new MethodResult("[IOB] GEN benchmark drawing", sw.ElapsedMilliseconds, ws0, WsMB(), 0, "FAIL"));
             return;
         }
         sw.Stop(); ws1 = WsMB();
-        Console.WriteLine($"  [GEN-1] 基准图生成 {N:N0} 实体 (Line60% / Poly2D15% / Arc10% / Text10% / Insert5%)  {sw.ElapsedMilliseconds:N0} ms  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] GEN 基准图生成", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
+        Console.WriteLine($"  [GEN-1] Generated {N:N0} entities (Line60% / Poly2D15% / Arc10% / Text10% / Insert5%)  {sw.ElapsedMilliseconds:N0} ms  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] GEN benchmark drawing", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
 
-        // ---------- GEN-2 写出基准 DWG（AC1018 基线文件） ----------
+        // ---------- GEN-2 Write the benchmark DWG (AC1018 baseline file) ----------
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var wg = new DwgWriter(benchDwg, bench) { Configuration = new DwgWriterConfiguration() };
         wg.Write(); wg.Dispose();
         sw.Stop(); ws1 = WsMB();
         long dwgSz = new FileInfo(benchDwg).Length;
-        Console.WriteLine($"  [GEN-2] 基准 DWG(AC1018) 写出  {sw.ElapsedMilliseconds:N0} ms  {dwgSz / 1024.0 / 1024.0:F2} MB  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] GEN 基准DWG写出", sw.ElapsedMilliseconds, ws0, ws1, dwgSz, "OK"));
+        Console.WriteLine($"  [GEN-2] Benchmark DWG(AC1018) written  {sw.ElapsedMilliseconds:N0} ms  {dwgSz / 1024.0 / 1024.0:F2} MB  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] GEN benchmark DWG write", sw.ElapsedMilliseconds, ws0, ws1, dwgSz, "OK"));
 
-        // ---------- GEN-3 写出基准 DXF（AC1018 基线文件） ----------
+        // ---------- GEN-3 Write the benchmark DXF (AC1018 baseline file) ----------
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var xd = new DxfWriter(benchDxf, bench) { Configuration = new DxfWriterConfiguration() };
         xd.Write(); xd.Dispose();
         sw.Stop(); ws1 = WsMB();
         long dxfSz = new FileInfo(benchDxf).Length;
-        Console.WriteLine($"  [GEN-3] 基准 DXF(AC1018) 写出  {sw.ElapsedMilliseconds:N0} ms  {dxfSz / 1024.0 / 1024.0:F2} MB  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] GEN 基准DXF写出", sw.ElapsedMilliseconds, ws0, ws1, dxfSz, "OK"));
+        Console.WriteLine($"  [GEN-3] Benchmark DXF(AC1018) written  {sw.ElapsedMilliseconds:N0} ms  {dxfSz / 1024.0 / 1024.0:F2} MB  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] GEN benchmark DXF write", sw.ElapsedMilliseconds, ws0, ws1, dxfSz, "OK"));
 
         bench = null;
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
 
-        // ================= DWG 组 =================
+        // ================= DWG group =================
         Console.WriteLine(new string('-', 80));
-        Console.WriteLine("▶ DWG 组：读基线 / 并行解码 / 增量保存(P1/P0) / 全量回退 / 并行序列化 / 流式写 / 惰性加载 / 保存进度事件");
+        Console.WriteLine("▶ DWG group: read baseline / parallel decode / incremental save (P1/P0) / full fallback / parallel serialization / streaming write / lazy load / save progress events");
 
         CadDocument docD = null;
         int totalEnt = 0;
 
-        // ---------- D1 DWG 读基线（带读取端 OnProgress 进度事件） ----------
+        // ---------- D1 DWG read baseline (with reader-side OnProgress progress events) ----------
         int readEvents = 0, readLastC = 0, readLastT = -1;
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var rdr1 = new DwgReader(benchDwg) { Configuration = new DwgReaderConfiguration { ReadSummaryInfo = true } };
@@ -626,31 +640,31 @@ internal static class Program
         docD = rdr1.Read();
         sw.Stop(); ws1 = WsMB();
         totalEnt = docD.ModelSpace.Entities.Count;
-        Console.WriteLine($"  [D1] DWG 读基线  {sw.ElapsedMilliseconds:N0} ms  实体={totalEnt:N0}  内存 {ws0:N0}→{ws1:N0} MB  进度事件={readEvents:N0} (末次 {readLastC:N0}/{readLastT:N0})");
-        _results.Add(new MethodResult("[IOB] D1 DWG读基线", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
+        Console.WriteLine($"  [D1] DWG read baseline  {sw.ElapsedMilliseconds:N0} ms  entities={totalEnt:N0}  memory {ws0:N0}->{ws1:N0} MB  progress events={readEvents:N0} (last {readLastC:N0}/{readLastT:N0})");
+        _results.Add(new MethodResult("[IOB] D1 DWG read baseline", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
 
-        // ---------- D2 DWG 并行解码读 ----------
+        // ---------- D2 DWG parallel-decode read ----------
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var rdr2 = new DwgReader(benchDwg) { Configuration = new DwgReaderConfiguration { ReadSummaryInfo = true, ParallelDecode = true } };
         var doc2 = rdr2.Read();
         sw.Stop(); ws1 = WsMB();
         int cnt2 = doc2.ModelSpace.Entities.Count;
         string st2 = cnt2 == totalEnt ? "OK" : $"MISMATCH={cnt2:N0}";
-        Console.WriteLine($"  [D2] DWG 并行解码读  {sw.ElapsedMilliseconds:N0} ms  实体={cnt2:N0}  {st2}  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] D2 DWG并行解码读", sw.ElapsedMilliseconds, ws0, ws1, 0, st2 == "OK" ? "OK" : "CHECK"));
+        Console.WriteLine($"  [D2] DWG parallel-decode read  {sw.ElapsedMilliseconds:N0} ms  entities={cnt2:N0}  {st2}  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] D2 DWG parallel-decode read", sw.ElapsedMilliseconds, ws0, ws1, 0, st2 == "OK" ? "OK" : "CHECK"));
         doc2 = null;
 
-        // ---------- D3 RetainPatchSource 读（为增量保存准备 patch 源） ----------
+        // ---------- D3 RetainPatchSource read (prepare the patch source for incremental save) ----------
         DwgObjectPatchSource patch = null;
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var rdr3 = new DwgReader(benchDwg) { Configuration = new DwgReaderConfiguration { ReadSummaryInfo = true, RetainPatchSource = true } };
         docD = rdr3.Read();
         patch = rdr3.PatchSource;
         sw.Stop(); ws1 = WsMB();
-        Console.WriteLine($"  [D3] DWG 读(保留patch源)  {sw.ElapsedMilliseconds:N0} ms  patch源={(patch != null ? "就绪" : "NULL")}  实体={docD.ModelSpace.Entities.Count:N0}  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] D3 DWG读+patch源", sw.ElapsedMilliseconds, ws0, ws1, 0, patch != null ? "OK" : "FAIL"));
+        Console.WriteLine($"  [D3] DWG read (retain patch source)  {sw.ElapsedMilliseconds:N0} ms  patch source={(patch != null ? "ready" : "NULL")}  entities={docD.ModelSpace.Entities.Count:N0}  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] D3 DWG read + patch source", sw.ElapsedMilliseconds, ws0, ws1, 0, patch != null ? "OK" : "FAIL"));
 
-        // ---------- D4 增量保存（无修改，P1 patch-source 策略） ----------
+        // ---------- D4 Incremental save (no changes, P1 patch-source strategy) ----------
         string out4 = Path.Combine(benchDir, "bench_inc_nochg.dwg");
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         string fb4 = null, st4 = "FAIL";
@@ -667,7 +681,7 @@ internal static class Program
                 if (e != null && e.Message != null)
                 {
                     if (n4.Count < 3) n4.Add(Trunc(e.Message, 60));
-                    if (fb4 == null && e.Message.Contains("回退")) fb4 = Trunc(e.Message, 60);
+                    if (fb4 == null && e.Message.Contains("fallback")) fb4 = Trunc(e.Message, 60);
                 }
             };
             wr4.Write(); wr4.Dispose();
@@ -678,10 +692,10 @@ internal static class Program
         catch (Exception ex) { st4 = "FAIL:" + Trunc(ex.Message, 40); }
         sw.Stop(); ws1 = WsMB();
         string sz4s = sz4 >= 1024 * 1024 ? $"{sz4 / 1024.0 / 1024.0:F2} MB" : $"{sz4 / 1024.0:F1} KB";
-        Console.WriteLine($"  [D4] 增量保存(无修改,P1)  {sw.ElapsedMilliseconds:N0} ms  产物={sz4s}  回读={st4}  通知=[{string.Join(" | ", n4)}]");
-        _results.Add(new MethodResult("[IOB] D4 增量保存无修改", sw.ElapsedMilliseconds, ws0, ws1, sz4, st4 == "OK" ? "OK" : "CHECK"));
+        Console.WriteLine($"  [D4] Incremental save (no changes, P1)  {sw.ElapsedMilliseconds:N0} ms  output={sz4s}  readback={st4}  notifications=[{string.Join(" | ", n4)}]");
+        _results.Add(new MethodResult("[IOB] D4 incremental save no changes", sw.ElapsedMilliseconds, ws0, ws1, sz4, st4 == "OK" ? "OK" : "CHECK"));
 
-        // ---------- D5 增量保存（5 实体修改，P0 脏句柄策略，分阶段计时：读/写/回读） ----------
+        // ---------- D5 Incremental save (5 entities modified, P0 dirty-handle strategy, phased timing: read/write/readback) ----------
         string out5 = Path.Combine(benchDir, "bench_inc_dirty.dwg");
         long t5Read = 0, t5Write = 0, t5Rb = 0;
         var n5 = new List<string>();
@@ -696,7 +710,7 @@ internal static class Program
             var patch5 = rdr5.PatchSource;
             sw5r.Stop(); t5Read = sw5r.ElapsedMilliseconds;
 
-            // 前 5 条 Line 平移 (+123456.789, +1000)：原始 Y∈[0,60]，移动后 Y≥1000 为唯一标识
+            // Translate the first 5 Lines by (+123456.789, +1000): original Y in [0,60], after the move Y>=1000 is the unique marker
             var dirty = new HashSet<ulong>();
             int moved = 0;
             foreach (Entity e in doc5.ModelSpace.Entities)
@@ -710,7 +724,7 @@ internal static class Program
                     moved++;
                 }
             }
-            dirty.Add(doc5.ModelSpace.Handle);  // 容器句柄：*Model_Space（实体列表有变）
+            dirty.Add(doc5.ModelSpace.Handle);  // Container handle: *Model_Space (the entity list changed)
 
             var sw5w = Stopwatch.StartNew();
             var wr5 = new DwgWriter(out5, doc5)
@@ -722,14 +736,14 @@ internal static class Program
                 if (e != null && e.Message != null)
                 {
                     if (n5.Count < 3) n5.Add(Trunc(e.Message, 60));
-                    if (fb5 == null && e.Message.Contains("回退")) fb5 = Trunc(e.Message, 60);
+                    if (fb5 == null && e.Message.Contains("fallback")) fb5 = Trunc(e.Message, 60);
                 }
             };
             wr5.Write(); wr5.Dispose();
             sw5w.Stop(); t5Write = sw5w.ElapsedMilliseconds;
             patch5?.Dispose();
 
-            // 回读校验：总数一致 且 恰好 5 条 Line 的 StartPoint.Y≥1000
+            // Readback check: total matches and exactly 5 Lines have StartPoint.Y >= 1000
             var sw5rb = Stopwatch.StartNew();
             var rb5 = new DwgReader(out5).Read();
             sw5rb.Stop(); t5Rb = sw5rb.ElapsedMilliseconds;
@@ -742,11 +756,11 @@ internal static class Program
         catch (Exception ex) { st5 = "FAIL:" + Trunc(ex.Message, 40); }
         sw.Stop(); ws1 = WsMB();
         sz5 = File.Exists(out5) ? new FileInfo(out5).Length : 0;
-        Console.WriteLine($"  [D5] 增量保存(5实体修改,P0)  总={sw.ElapsedMilliseconds:N0} ms [读={t5Read:N0} 写={t5Write:N0} 回读={t5Rb:N0}]  产物={sz5 / 1024.0 / 1024.0:F2} MB  校验={st5}  通知=[{string.Join(" | ", n5)}]");
-        _results.Add(new MethodResult("[IOB] D5 增量保存脏句柄", sw.ElapsedMilliseconds, ws0, ws1, sz5, st5 == "OK" ? "OK" : "CHECK"));
+        Console.WriteLine($"  [D5] Incremental save (5 entities modified, P0)  total={sw.ElapsedMilliseconds:N0} ms [read={t5Read:N0} write={t5Write:N0} readback={t5Rb:N0}]  output={sz5 / 1024.0 / 1024.0:F2} MB  check={st5}  notifications=[{string.Join(" | ", n5)}]");
+        _results.Add(new MethodResult("[IOB] D5 incremental save dirty handles", sw.ElapsedMilliseconds, ws0, ws1, sz5, st5 == "OK" ? "OK" : "CHECK"));
         patch?.Dispose();
 
-        // ---------- D6 无 patch 源的全量保存（正确契约=静默全量保存，无回退通知） ----------
+        // ---------- D6 Full save without a patch source (correct contract = silent full save, no fallback notification) ----------
         string out6 = Path.Combine(benchDir, "bench_full_fallback.dwg");
         long t6Read = 0, t6Write = 0, t6Rb = 0;
         sw = Stopwatch.StartNew(); ws0 = WsMB();
@@ -760,7 +774,7 @@ internal static class Program
             var sw6w = Stopwatch.StartNew();
             var wr6 = new DwgWriter(out6, doc6)
             {
-                Configuration = new DwgWriterConfiguration { IncrementalSave = true } // 无 PatchSource → 应自动回退全量
+                Configuration = new DwgWriterConfiguration { IncrementalSave = true } // No PatchSource -> should auto-fall back to a full save
             };
             wr6.OnNotification += (s, e) => { if (e != null && e.Message != null && fb6 == null) fb6 = Trunc(e.Message, 60); };
             wr6.Write(); wr6.Dispose();
@@ -773,10 +787,10 @@ internal static class Program
         }
         catch (Exception ex) { st6 = "FAIL:" + Trunc(ex.Message, 40); }
         sw.Stop(); ws1 = WsMB();
-        Console.WriteLine($"  [D6] 全量回退(无patch源)  总={sw.ElapsedMilliseconds:N0} ms [读={t6Read:N0} 写={t6Write:N0} 回读={t6Rb:N0}]  产物={sz6 / 1024.0 / 1024.0:F2} MB  回读={st6}  通知={fb6 ?? "无(符合静默契约)"}");
-        _results.Add(new MethodResult("[IOB] D6 全量回退验证", sw.ElapsedMilliseconds, ws0, ws1, sz6, st6 == "OK" ? "OK" : "CHECK"));
+        Console.WriteLine($"  [D6] Full fallback (no patch source)  total={sw.ElapsedMilliseconds:N0} ms [read={t6Read:N0} write={t6Write:N0} readback={t6Rb:N0}]  output={sz6 / 1024.0 / 1024.0:F2} MB  readback={st6}  notification={fb6 ?? "none (matches the silent contract)"}");
+        _results.Add(new MethodResult("[IOB] D6 full fallback check", sw.ElapsedMilliseconds, ws0, ws1, sz6, st6 == "OK" ? "OK" : "CHECK"));
 
-        // ---------- D7/D8 全量保存：串行 vs 并行序列化（期望字节一致） ----------
+        // ---------- D7/D8 Full save: serial vs parallel serialization (byte-identical output expected) ----------
         string out7 = Path.Combine(benchDir, "bench_full_serial.dwg");
         string out8 = Path.Combine(benchDir, "bench_full_paral.dwg");
         sw = Stopwatch.StartNew(); ws0 = WsMB();
@@ -784,8 +798,8 @@ internal static class Program
         wr7.Write(); wr7.Dispose();
         sw.Stop(); ws1 = WsMB();
         long sz7 = new FileInfo(out7).Length;
-        Console.WriteLine($"  [D7] 全量保存(串行)  {sw.ElapsedMilliseconds:N0} ms  产物={sz7 / 1024.0 / 1024.0:F2} MB  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] D7 全量保存串行", sw.ElapsedMilliseconds, ws0, ws1, sz7, "OK"));
+        Console.WriteLine($"  [D7] Full save (serial)  {sw.ElapsedMilliseconds:N0} ms  output={sz7 / 1024.0 / 1024.0:F2} MB  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] D7 full save serial", sw.ElapsedMilliseconds, ws0, ws1, sz7, "OK"));
 
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var wr8 = new DwgWriter(out8, docD) { Configuration = new DwgWriterConfiguration { IncrementalSave = false, ParallelSerialize = true } };
@@ -794,15 +808,15 @@ internal static class Program
         long sz8 = new FileInfo(out8).Length;
         bool same8 = Convert.ToBase64String(SHA256.HashData(File.ReadAllBytes(out7)))
                    == Convert.ToBase64String(SHA256.HashData(File.ReadAllBytes(out8)));
-        string st8 = (sz8 == sz7 && same8) ? "OK+字节一致" : $"CHECK(sz {sz7:N0}→{sz8:N0} hash={(same8 ? "同" : "异")})";
-        Console.WriteLine($"  [D8] 全量保存(并行序列化)  {sw.ElapsedMilliseconds:N0} ms  产物={sz8 / 1024.0 / 1024.0:F2} MB  对比D7: {st8}  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] D8 全量保存并行", sw.ElapsedMilliseconds, ws0, ws1, sz8, same8 ? "OK" : "CHECK"));
+        string st8 = (sz8 == sz7 && same8) ? "OK+bytes identical" : $"CHECK(sz {sz7:N0}->{sz8:N0} hash={(same8 ? "same" : "diff")})";
+        Console.WriteLine($"  [D8] Full save (parallel serialization)  {sw.ElapsedMilliseconds:N0} ms  output={sz8 / 1024.0 / 1024.0:F2} MB  vs D7: {st8}  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] D8 full save parallel", sw.ElapsedMilliseconds, ws0, ws1, sz8, same8 ? "OK" : "CHECK"));
 
-        // ---------- D9/D10 DWG 流式写（internal API 经反射：BeginStreamingObjects/WriteEntityDirect/EndStreamingObjects） ----------
-        RunDwgStreamingWrite(Path.Combine(benchDir, "bench_stream_ac1018.dwg"), ACadVersion.AC1018, 50_000, "[IOB] D9 DWG流式写AC1018");
-        RunDwgStreamingWrite(Path.Combine(benchDir, "bench_stream_ac1021.dwg"), ACadVersion.AC1021, 50_000, "[IOB] D10 DWG流式写AC1021");
+        // ---------- D9/D10 DWG streaming write (internal API via reflection: BeginStreamingObjects/WriteEntityDirect/EndStreamingObjects) ----------
+        RunDwgStreamingWrite(Path.Combine(benchDir, "bench_stream_ac1018.dwg"), ACadVersion.AC1018, 50_000, "[IOB] D9 DWG streaming write AC1018");
+        RunDwgStreamingWrite(Path.Combine(benchDir, "bench_stream_ac1021.dwg"), ACadVersion.AC1021, 50_000, "[IOB] D10 DWG streaming write AC1021");
 
-        // ---------- D11/D12 惰性加载：PreparePartialRead + ReadObjectsPartial ----------
+        // ---------- D11/D12 Lazy load: PreparePartialRead + ReadObjectsPartial ----------
         DwgReader rdr11 = null;
         DwgPartialReadContext ctx = null;
         sw = Stopwatch.StartNew(); ws0 = WsMB();
@@ -811,19 +825,20 @@ internal static class Program
             rdr11 = new DwgReader(benchDwg) { Configuration = new DwgReaderConfiguration { ReadSummaryInfo = true } };
             ctx = rdr11.PreparePartialRead();
             sw.Stop(); ws1 = WsMB();
-            Console.WriteLine($"  [D11] PreparePartialRead  {sw.ElapsedMilliseconds:N0} ms  (仅表头+句柄区，未读对象)  内存 {ws0:N0}→{ws1:N0} MB");
+            Console.WriteLine($"  [D11] PreparePartialRead  {sw.ElapsedMilliseconds:N0} ms  (header + handle region only, no objects read)  memory {ws0:N0}->{ws1:N0} MB");
             _results.Add(new MethodResult("[IOB] D11 PreparePartialRead", sw.ElapsedMilliseconds, ws0, ws1, 0, "OK"));
         }
         catch (Exception ex)
         {
             sw.Stop(); ws1 = WsMB();
-            Console.WriteLine($"  [D11] 惰性加载准备失败: {Trunc(ex.Message, 80)}");
+            Console.WriteLine($"  [D11] Lazy-load preparation failed: {Trunc(ex.Message, 80)}");
             _results.Add(new MethodResult("[IOB] D11 PreparePartialRead", sw.ElapsedMilliseconds, ws0, ws1, 0, "FAIL"));
         }
 
         if (ctx != null)
         {
-            // seed = 全部表头句柄 + 模型空间前 100 个实体句柄；noExpand = *MODEL_SPACE/*PAPER_SPACE（不展开整张实体清单）
+            // seeds = all header handles + the first 100 entity handles in model space;
+            // noExpand = *MODEL_SPACE/*PAPER_SPACE (do not expand the whole entity list)
             var seeds = new Queue<ulong>();
             foreach (var h in ctx.HeaderHandles.GetHandles())
                 if (h.HasValue && h.Value > 0) seeds.Enqueue(h.Value);
@@ -848,15 +863,15 @@ internal static class Program
                 int decCount = doc12.GetCadObjects<CadObject>().Count();
                 int decModel = doc12.ModelSpace != null ? doc12.ModelSpace.Entities.Count : 0;
                 st12 = (decCount > 0 && decCount < fullObjs) ? "OK" : $"CHECK(dec={decCount},full={fullObjs:N0})";
-                Console.WriteLine($"  [D12] ReadObjectsPartial (seed={seeds.Count}句柄, noExpand={noExpand.Count})  {sw.ElapsedMilliseconds:N0} ms  解码={decCount:N0}/{fullObjs:N0}对象  模型空间实体={decModel}  内存 {ws0:N0}→{ws1:N0} MB");
-                // 诊断：解码对象类型直方图 + 非种子模型空间实体的句柄分布（解释展开来源）
+                Console.WriteLine($"  [D12] ReadObjectsPartial (seed={seeds.Count} handles, noExpand={noExpand.Count})  {sw.ElapsedMilliseconds:N0} ms  decoded={decCount:N0}/{fullObjs:N0} objects  model-space entities={decModel}  memory {ws0:N0}->{ws1:N0} MB");
+                // Diagnostics: histogram of decoded object types + handle distribution of non-seed model-space entities (explains where expansion came from)
                 var hist = doc12.GetCadObjects<CadObject>()
                     .GroupBy(o => o.GetType().Name)
                     .OrderByDescending(g => g.Count())
                     .Take(10)
                     .Select(g => $"{g.Key}={g.Count():N0}")
                     .ToList();
-                Console.WriteLine($"  [D12] 类型直方图: {string.Join("  ", hist)}");
+                Console.WriteLine($"  [D12] Type histogram: {string.Join("  ", hist)}");
                 if (doc12.ModelSpace != null)
                 {
                     var seedSet = new HashSet<ulong>(seeds);
@@ -870,19 +885,19 @@ internal static class Program
                             if (ee.Handle > exMax) exMax = ee.Handle;
                         }
                     }
-                    Console.WriteLine($"  [D12] 非种子模型空间实体={extraTop:N0}  句柄范围=[{exMin:N0}..{exMax:N0}]");
+                    Console.WriteLine($"  [D12] Non-seed model-space entities={extraTop:N0}  handle range=[{exMin:N0}..{exMax:N0}]");
                 }
             }
             catch (Exception ex)
             {
                 st12 = "FAIL:" + Trunc(ex.Message, 40);
-                Console.WriteLine($"  [D12] 部分读取失败: {Trunc(ex.Message, 80)}");
+                Console.WriteLine($"  [D12] Partial read failed: {Trunc(ex.Message, 80)}");
             }
             sw.Stop(); ws1 = WsMB();
-            _results.Add(new MethodResult("[IOB] D12 部分读100种子", sw.ElapsedMilliseconds, ws0, ws1, 0, st12 == "OK" ? "OK" : "CHECK"));
+            _results.Add(new MethodResult("[IOB] D12 partial read 100 seeds", sw.ElapsedMilliseconds, ws0, ws1, 0, st12 == "OK" ? "OK" : "CHECK"));
         }
 
-        // ---------- D13 全量保存 + OnSaveProgress 写进度事件 ----------
+        // ---------- D13 Full save + OnSaveProgress write progress events ----------
         string out13 = Path.Combine(benchDir, "bench_prog.dwg");
         int saveEvents = 0, saveLastC = 0, saveLastT = 0;
         sw = Stopwatch.StartNew(); ws0 = WsMB();
@@ -898,16 +913,16 @@ internal static class Program
         catch (Exception ex) { st13 = "FAIL:" + Trunc(ex.Message, 40); }
         sw.Stop(); ws1 = WsMB();
         double pct13 = saveLastT > 0 ? saveLastC * 100.0 / saveLastT : 0.0;
-        Console.WriteLine($"  [D13] 全量保存+OnSaveProgress  {sw.ElapsedMilliseconds:N0} ms  产物={sz13 / 1024.0 / 1024.0:F2} MB  进度事件={saveEvents:N0}  末次={saveLastC:N0}/{saveLastT:N0} ({pct13:F1}%)");
-        _results.Add(new MethodResult("[IOB] D13 保存进度事件", sw.ElapsedMilliseconds, ws0, ws1, sz13, st13));
+        Console.WriteLine($"  [D13] Full save + OnSaveProgress  {sw.ElapsedMilliseconds:N0} ms  output={sz13 / 1024.0 / 1024.0:F2} MB  progress events={saveEvents:N0}  last={saveLastC:N0}/{saveLastT:N0} ({pct13:F1}%)");
+        _results.Add(new MethodResult("[IOB] D13 save progress events", sw.ElapsedMilliseconds, ws0, ws1, sz13, st13));
 
         docD = null;
         rdr11 = null; ctx = null;
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
 
-        // ================= DXF 组 =================
+        // ================= DXF group =================
         Console.WriteLine(new string('-', 80));
-        Console.WriteLine("▶ DXF 组：读基线 / 全量写 / 流式写 / XData驻留开关 / ReadXData / 版本门控往返");
+        Console.WriteLine("▶ DXF group: read baseline / full write / streaming write / XData interning on/off / ReadXData / version-gated round-trip");
 
         CadDocument docX = null;
         int xEnt = 0;
@@ -918,28 +933,28 @@ internal static class Program
             xEnt = docX.ModelSpace.Entities.Count;
             sw.Stop(); ws1 = WsMB();
             string stX1 = xEnt == totalEnt ? "OK" : $"CHECK={xEnt:N0}";
-            Console.WriteLine($"  [X1] DXF 读基线  {sw.ElapsedMilliseconds:N0} ms  实体={xEnt:N0}  内存 {ws0:N0}→{ws1:N0} MB  {stX1}");
-            _results.Add(new MethodResult("[IOB] X1 DXF读基线", sw.ElapsedMilliseconds, ws0, ws1, 0, stX1 == "OK" ? "OK" : "CHECK"));
+            Console.WriteLine($"  [X1] DXF read baseline  {sw.ElapsedMilliseconds:N0} ms  entities={xEnt:N0}  memory {ws0:N0}->{ws1:N0} MB  {stX1}");
+            _results.Add(new MethodResult("[IOB] X1 DXF read baseline", sw.ElapsedMilliseconds, ws0, ws1, 0, stX1 == "OK" ? "OK" : "CHECK"));
         }
         catch (Exception ex)
         {
             sw.Stop(); ws1 = WsMB();
-            Console.WriteLine($"  [X1] DXF 读取失败: {Trunc(ex.Message, 80)}");
-            _results.Add(new MethodResult("[IOB] X1 DXF读基线", sw.ElapsedMilliseconds, ws0, ws1, 0, "FAIL"));
+            Console.WriteLine($"  [X1] DXF read failed: {Trunc(ex.Message, 80)}");
+            _results.Add(new MethodResult("[IOB] X1 DXF read baseline", sw.ElapsedMilliseconds, ws0, ws1, 0, "FAIL"));
             return;
         }
 
-        // ---------- X2 DXF 全量写（基线） ----------
+        // ---------- X2 DXF full write (baseline) ----------
         string outX2 = Path.Combine(benchDir, "bench_dxf_full.dxf");
         sw = Stopwatch.StartNew(); ws0 = WsMB();
         var wx2 = new DxfWriter(outX2, docX) { Configuration = new DxfWriterConfiguration() };
         wx2.Write(); wx2.Dispose();
         sw.Stop(); ws1 = WsMB();
         long szX2 = new FileInfo(outX2).Length;
-        Console.WriteLine($"  [X2] DXF 全量写  {sw.ElapsedMilliseconds:N0} ms  产物={szX2 / 1024.0 / 1024.0:F2} MB  内存 {ws0:N0}→{ws1:N0} MB");
-        _results.Add(new MethodResult("[IOB] X2 DXF全量写", sw.ElapsedMilliseconds, ws0, ws1, szX2, "OK"));
+        Console.WriteLine($"  [X2] DXF full write  {sw.ElapsedMilliseconds:N0} ms  output={szX2 / 1024.0 / 1024.0:F2} MB  memory {ws0:N0}->{ws1:N0} MB");
+        _results.Add(new MethodResult("[IOB] X2 DXF full write", sw.ElapsedMilliseconds, ws0, ws1, szX2, "OK"));
 
-        // ---------- X3 DXF 流式写（前 30k 实体：克隆 + WriteEntityOne + 字节拼接） ----------
+        // ---------- X3 DXF streaming write (first 30k entities: clone + WriteEntityOne + byte concatenation) ----------
         {
             const int SX = 30_000;
             string outX3 = Path.Combine(benchDir, "bench_dxf_stream.dxf");
@@ -973,11 +988,11 @@ internal static class Program
             }
             catch (Exception ex) { stX3 = "FAIL:" + Trunc(ex.Message, 40); }
             sw.Stop(); ws1 = WsMB();
-            Console.WriteLine($"  [X3] DXF 流式写({SX:N0}实体)  {sw.ElapsedMilliseconds:N0} ms  产物={szX3 / 1024.0 / 1024.0:F2} MB  回读={stX3}  内存 {ws0:N0}→{ws1:N0} MB");
-            _results.Add(new MethodResult("[IOB] X3 DXF流式写30k", sw.ElapsedMilliseconds, ws0, ws1, szX3, stX3 == "OK" ? "OK" : "CHECK"));
+            Console.WriteLine($"  [X3] DXF streaming write ({SX:N0} entities)  {sw.ElapsedMilliseconds:N0} ms  output={szX3 / 1024.0 / 1024.0:F2} MB  readback={stX3}  memory {ws0:N0}->{ws1:N0} MB");
+            _results.Add(new MethodResult("[IOB] X3 DXF streaming write 30k", sw.ElapsedMilliseconds, ws0, ws1, szX3, stX3 == "OK" ? "OK" : "CHECK"));
         }
 
-        // ---------- X7 版本门控 DXF 往返（7 版本 写+回读；须在 docX 置空之前执行） ----------
+        // ---------- X7 Version-gated DXF round-trip (7 versions, write + readback; must run before docX is nulled out) ----------
         foreach (var v in SupportedVersions)
         {
             string outX7 = Path.Combine(benchDir, $"bench_dxf_{v.Name.Replace("/", "_")}.dxf");
@@ -997,13 +1012,13 @@ internal static class Program
             }
             catch (Exception ex) { stX7 = "FAIL:" + Trunc(ex.Message, 40); }
             sw.Stop(); ws1 = WsMB();
-            Console.WriteLine($"  [X7] DXF 版本门控 {v.Version}  写+回读  {sw.ElapsedMilliseconds:N0} ms  产物={szX7 / 1024.0 / 1024.0:F2} MB  {stX7}");
-            _results.Add(new MethodResult($"[IOB] X7 DXF往返{v.Name}", sw.ElapsedMilliseconds, ws0, ws1, szX7, stX7 == "OK" ? "OK" : "CHECK"));
+            Console.WriteLine($"  [X7] DXF version-gated {v.Version}  write+readback  {sw.ElapsedMilliseconds:N0} ms  output={szX7 / 1024.0 / 1024.0:F2} MB  {stX7}");
+            _results.Add(new MethodResult($"[IOB] X7 DXF round-trip {v.Name}", sw.ElapsedMilliseconds, ws0, ws1, szX7, stX7 == "OK" ? "OK" : "CHECK"));
             GC.Collect();
         }
 
-        // ---------- X4/X5 XData 驻留 开/关（对比内存） ----------
-        // XData 驻留表为进程级静态 → 两轮之间 Clear() + GC，保证基线一致
+        // ---------- X4/X5 XData interning on/off (memory comparison) ----------
+        // The XData interning table is a process-wide static -> Clear() + GC between the two rounds keeps the baseline consistent
         long wsOn = 0, wsOff = 0;
         {
             DxfXDataInterning.Clear();
@@ -1015,8 +1030,8 @@ internal static class Program
             int cntOn = docOn.ModelSpace.Entities.Count;
             sw.Stop(); ws1 = WsMB();
             wsOn = ws1 - ws0;
-            Console.WriteLine($"  [X4] DXF 读(XData驻留开)  {sw.ElapsedMilliseconds:N0} ms  实体={cntOn:N0}  内存增量={wsOn:N0} MB (起{ws0:N0}→终{ws1:N0})");
-            _results.Add(new MethodResult("[IOB] X4 XData驻留开", sw.ElapsedMilliseconds, ws0, ws1, 0, cntOn == totalEnt ? "OK" : "CHECK"));
+            Console.WriteLine($"  [X4] DXF read (XData interning ON)  {sw.ElapsedMilliseconds:N0} ms  entities={cntOn:N0}  memory delta={wsOn:N0} MB (start {ws0:N0} -> end {ws1:N0})");
+            _results.Add(new MethodResult("[IOB] X4 XData interning ON", sw.ElapsedMilliseconds, ws0, ws1, 0, cntOn == totalEnt ? "OK" : "CHECK"));
             docOn = null;
         }
         {
@@ -1028,20 +1043,20 @@ internal static class Program
             int cntOff = docOff.ModelSpace.Entities.Count;
             sw.Stop(); ws1 = WsMB();
             wsOff = ws1 - ws0;
-            Console.WriteLine($"  [X5] DXF 读(XData驻留关)  {sw.ElapsedMilliseconds:N0} ms  实体={cntOff:N0}  内存增量={wsOff:N0} MB (起{ws0:N0}→终{ws1:N0})  较X4内存差={wsOff - wsOn:N0} MB");
-            _results.Add(new MethodResult("[IOB] X5 XData驻留关", sw.ElapsedMilliseconds, ws0, ws1, 0, cntOff == totalEnt ? "OK" : "CHECK"));
+            Console.WriteLine($"  [X5] DXF read (XData interning OFF)  {sw.ElapsedMilliseconds:N0} ms  entities={cntOff:N0}  memory delta={wsOff:N0} MB (start {ws0:N0} -> end {ws1:N0})  memory diff vs X4={wsOff - wsOn:N0} MB");
+            _results.Add(new MethodResult("[IOB] X5 XData interning OFF", sw.ElapsedMilliseconds, ws0, ws1, 0, cntOff == totalEnt ? "OK" : "CHECK"));
             docOff = null;
         }
 
-        // ---------- X6 ReadXData=false（跳过 XData） ----------
+        // ---------- X6 ReadXData=false (skip XData) ----------
         {
             sw = Stopwatch.StartNew(); ws0 = WsMB();
             var doc6 = DxfReader.Read(benchDxf, new DxfReaderConfiguration { ReadXData = false });
             int cnt6 = doc6.ModelSpace.Entities.Count;
             sw.Stop(); ws1 = WsMB();
             long ws6 = ws1 - ws0;
-            Console.WriteLine($"  [X6] DXF 读(ReadXData=false)  {sw.ElapsedMilliseconds:N0} ms  实体={cnt6:N0}  内存增量={ws6:N0} MB (起{ws0:N0}→终{ws1:N0})  较X5内存差={ws6 - wsOff:N0} MB");
-            _results.Add(new MethodResult("[IOB] X6 不读XData", sw.ElapsedMilliseconds, ws0, ws1, 0, cnt6 == totalEnt ? "OK" : "CHECK"));
+            Console.WriteLine($"  [X6] DXF read (ReadXData=false)  {sw.ElapsedMilliseconds:N0} ms  entities={cnt6:N0}  memory delta={ws6:N0} MB (start {ws0:N0} -> end {ws1:N0})  memory diff vs X5={ws6 - wsOff:N0} MB");
+            _results.Add(new MethodResult("[IOB] X6 no XData read", sw.ElapsedMilliseconds, ws0, ws1, 0, cnt6 == totalEnt ? "OK" : "CHECK"));
             doc6 = null;
         }
 
@@ -1050,13 +1065,13 @@ internal static class Program
         Console.WriteLine(new string('=', 80));
     }
 
-    // ---------- iobench: 生成 10 万实体基准图（全实体带 XData） ----------
+    // ---------- iobench: generate a 100k-entity benchmark drawing (all entities carry XData) ----------
     private static CadDocument BuildBenchDocument(int n)
     {
         var doc = new CadDocument();
         doc.Header.Version = ACadVersion.AC1018;
 
-        // 基准块：1 Line + 1 Arc + 1 Text
+        // Benchmark block: 1 Line + 1 Arc + 1 Text
         var blk = new BlockRecord("BENCH_BLK");
         blk.Entities.Add(new Line(new XYZ(0, 0, 0), new XYZ(30, 0, 0)));
         blk.Entities.Add(new Arc(new XYZ(0, 20, 0), 10, 0, Math.PI));
@@ -1090,7 +1105,7 @@ internal static class Program
             else
                 e = new Insert(blk) { InsertPoint = new XYZ(x, y, 0) };
 
-            // 全实体挂 XData：2 字符串（低基数→驻留友好）+ 1 整型 + 1 实型
+            // Attach XData to every entity: 2 strings (low cardinality -> interning-friendly) + 1 int + 1 real
             var xd = new ExtendedData(new ExtendedDataRecord[]
             {
                 new ExtendedDataString(zones[i % 4]),
@@ -1107,7 +1122,7 @@ internal static class Program
         return doc;
     }
 
-    // ---------- iobench: DWG 流式写（internal API 经反射调用） ----------
+    // ---------- iobench: DWG streaming write (internal API invoked via reflection) ----------
     private static void RunDwgStreamingWrite(string outPath, ACadVersion version, int count, string label)
     {
         var sw = Stopwatch.StartNew();
@@ -1126,14 +1141,14 @@ internal static class Program
             var writer = new DwgWriter(outPath, dst) { Configuration = new DwgWriterConfiguration() };
             Type wt = typeof(DwgWriter);
             var mBegin = wt.GetMethod("BeginStreamingObjects", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
-            if (mBegin == null) throw new MissingMethodException("BeginStreamingObjects 未找到");
+            if (mBegin == null) throw new MissingMethodException("BeginStreamingObjects not found");
             object objWriter = mBegin.Invoke(writer, null);
             var mWrite = objWriter.GetType().GetMethod("WriteEntityDirect", BindingFlags.Instance | BindingFlags.Public, null, new[] { typeof(Entity) }, null);
-            if (mWrite == null) throw new MissingMethodException("WriteEntityDirect 未找到");
+            if (mWrite == null) throw new MissingMethodException("WriteEntityDirect not found");
             foreach (Entity e in dst.ModelSpace.Entities)
                 mWrite.Invoke(objWriter, new object[] { e });
             var mEnd = wt.GetMethod("EndStreamingObjects", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(CadDocument), objWriter.GetType() }, null);
-            if (mEnd == null) throw new MissingMethodException("EndStreamingObjects 未找到");
+            if (mEnd == null) throw new MissingMethodException("EndStreamingObjects not found");
             mEnd.Invoke(writer, new object[] { dst, objWriter });
             writer.Dispose();
             sz = new FileInfo(outPath).Length;
@@ -1155,21 +1170,22 @@ internal static class Program
             }
             catch (Exception rex) { status = "READFAIL:" + Trunc(rex.Message, 30); }
         }
-        Console.WriteLine($"  [{label}]  DWG流式写({count:N0} Line, {version})  {sw.ElapsedMilliseconds:N0} ms  产物={sz / 1024.0 / 1024.0:F2} MB  回读={status}  内存 {ws0:N0}→{ws1:N0} MB");
+        Console.WriteLine($"  [{label}]  DWG streaming write ({count:N0} Line, {version})  {sw.ElapsedMilliseconds:N0} ms  output={sz / 1024.0 / 1024.0:F2} MB  readback={status}  memory {ws0:N0}->{ws1:N0} MB");
         _results.Add(new MethodResult(label, sw.ElapsedMilliseconds, ws0, ws1, sz, status == "OK" ? "OK" : "CHECK"));
     }
 
-    // ================= 模式分派（恢复的"各种模式"读写） =================
+    // ================= Mode dispatch (restored "various modes" read/write) =================
     private static bool TryRunMode(string mode, string[] args, string baseDir, string samplePath)
     {
         string a1 = args.Length > 1 ? args[1] : null;
         string a2 = args.Length > 2 ? args[2] : null;
         string a3 = args.Length > 3 ? args[3] : null;
+        string a4 = args.Length > 4 ? args[4] : null;
         switch (mode.ToLowerInvariant())
         {
             case "empty":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: empty <版本> [out.dwg]"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: empty <version> [out.dwg]"); return true; }
                 ACadVersion ver = (ACadVersion)Enum.Parse(typeof(ACadVersion), a1, true);
                 string outP = a2 ?? Path.Combine(baseDir, $"empty_{a1}.dwg");
                 var d = new CadDocument(); d.Header.Version = ver;
@@ -1179,7 +1195,7 @@ internal static class Program
             }
             case "rt":
             {
-                if (a1 == null || a2 == null) { Console.Error.WriteLine("用法: rt <in.dwg> <out.dwg> [版本]"); return true; }
+                if (a1 == null || a2 == null) { Console.Error.WriteLine("Usage: rt <in.dwg> <out.dwg> [version]"); return true; }
                 string inP = ResolvePath(a1, baseDir);
                 var rd = DwgReader.Read(inP);
                 Console.WriteLine($"[RT] read {inP} version={rd.Header.Version} objs={rd.GetCadObjects<CadObject>().Count()}");
@@ -1190,14 +1206,15 @@ internal static class Program
             }
             case "mktypes":
             {
-                // 合成线型测试: 字面名 "--GAS--;" 的自定义线型(带文字段+样式) + 简单虚线
-                if (a1 == null) { Console.Error.WriteLine("用法: mktypes <out.dwg>"); return true; }
+                // Synthetic linetype test: a custom linetype with the literal name "--GAS--;"
+                // (with a text segment + style) + a simple dashed line
+                if (a1 == null) { Console.Error.WriteLine("Usage: mktypes <out.dwg>"); return true; }
                 var d = new CadDocument();
                 d.Header.Version = ACadVersion.AC1018;
                 d.Header.CodePage = "gb2312";
                 var st = new TextStyle("HZTXT") { Filename = "simplex.shx", BigFontFilename = "hztxt.shx" };
                 d.TextStyles.Add(st);
-                var ltGas = new LineType("--GAS--;") { Description = "Gas line ----GAS----" };
+                var ltGas = new LineType("--GAS--") { Description = "Gas line ----GAS----" };
                 ltGas.AddSegment(new LineType.Segment { Length = 12.7 });
                 var txtSeg = new LineType.Segment { Length = -5.08, Flags = LineTypeShapeFlags.Text, Text = "GAS", Scale = 0.5, Style = st };
                 ltGas.AddSegment(txtSeg);
@@ -1209,14 +1226,14 @@ internal static class Program
                 d.LineTypes.Add(ltSimple);
                 var stShape = new TextStyle("GASSHP") { Filename = "gas.shx", Flags = StyleFlags.IsShape };
                 d.TextStyles.Add(stShape);
-                var ltShape = new LineType("--GAS-SHAPE--;") { Description = "shape segment gas" };
+                var ltShape = new LineType("--GAS-SHAPE--") { Description = "shape segment gas" };
                 ltShape.AddSegment(new LineType.Segment { Length = 12.7 });
                 ltShape.AddSegment(new LineType.Segment { Length = -5.08, Flags = LineTypeShapeFlags.Shape, ShapeNumber = 1, Scale = 0.5, Style = stShape });
                 ltShape.AddSegment(new LineType.Segment { Length = -6.35 });
                 d.LineTypes.Add(ltShape);
-                var ltCn = new LineType("--GAS-CN--;") { Description = "煤气线 ----煤气----" };
+                var ltCn = new LineType("--GAS-CN--") { Description = "Gas line ----GAS----" };
                 ltCn.AddSegment(new LineType.Segment { Length = 12.7 });
-                ltCn.AddSegment(new LineType.Segment { Length = -5.08, Flags = LineTypeShapeFlags.Text, Text = "煤气", Scale = 0.5, Style = st });
+                ltCn.AddSegment(new LineType.Segment { Length = -5.08, Flags = LineTypeShapeFlags.Text, Text = "GAS", Scale = 0.5, Style = st });
                 ltCn.AddSegment(new LineType.Segment { Length = -6.35 });
                 d.LineTypes.Add(ltCn);
                 var lay = new Layer("GASLAYER");
@@ -1236,7 +1253,7 @@ internal static class Program
                 string outP = ResolvePath(a1, baseDir);
                 DwgWriter.Write(outP, d, new DwgWriterConfiguration { WriteShapes = true });
                 Console.WriteLine($"[MKTYPES] wrote {outP} size={new FileInfo(outP).Length}");
-                // R2013 变体: 验证 R2007+ (UTF-16 文本区) 路径
+                // R2013 variant: verifies the R2007+ (UTF-16 text region) path
                 d.Header.Version = ACadVersion.AC1032;
                 string outP2 = Path.Combine(Path.GetDirectoryName(outP) ?? ".", "linetest2013.dwg");
                 DwgWriter.Write(outP2, d, new DwgWriterConfiguration { WriteShapes = true });
@@ -1245,7 +1262,7 @@ internal static class Program
             }
             case "stripvp":
             {
-                if (a1 == null || a2 == null) { Console.Error.WriteLine("用法: stripvp <NEW|in.dwg> <out.dwg> [版本]"); return true; }
+                if (a1 == null || a2 == null) { Console.Error.WriteLine("Usage: stripvp <NEW|in.dwg> <out.dwg> [version]"); return true; }
                 CadDocument sd = a1.Equals("NEW", StringComparison.OrdinalIgnoreCase)
                     ? new CadDocument()
                     : DwgReader.Read(ResolvePath(a1, baseDir));
@@ -1260,7 +1277,7 @@ internal static class Program
             }
             case "dump":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: dump <file.dwg>"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: dump <file.dwg>"); return true; }
                 string inP = ResolvePath(a1, baseDir);
                 var dd = DwgReader.Read(inP, new DwgReaderConfiguration { Failsafe = false });
                 Console.WriteLine($"[DUMP] {inP} version={dd.Header.Version} classes={dd.Classes.Count}");
@@ -1278,7 +1295,7 @@ internal static class Program
             }
             case "classes":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: classes <file.dwg>"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: classes <file.dwg>"); return true; }
                 var cdoc = DwgReader.Read(ResolvePath(a1, baseDir));
                 Console.WriteLine($"[CLS] version={cdoc.Header.Version} classes={cdoc.Classes.Count}");
                 foreach (var c in cdoc.Classes.OrderBy(c => c.ClassNumber))
@@ -1287,7 +1304,7 @@ internal static class Program
             }
             case "objinfo":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: objinfo <file.dwg|dxf> <0x..> [..|all]"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: objinfo <file.dwg|dxf> <0x..> [..|all]"); return true; }
                 string inP = ResolvePath(a1, baseDir);
                 CadDocument odoc = inP.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase) ? DxfReader.Read(inP) : DwgReader.Read(inP);
                 var map = new Dictionary<ulong, CadObject>();
@@ -1301,8 +1318,8 @@ internal static class Program
                 foreach (var ah in args.Skip(2))
                 {
                     if (!ulong.TryParse(ah.Replace("0x", ""), System.Globalization.NumberStyles.HexNumber, null, out ulong h))
-                    { Console.WriteLine($"[OI] {ah}: 非十六进制句柄"); continue; }
-                    if (!map.TryGetValue(h, out var o)) { Console.WriteLine($"[OI] 0x{h:X}: <不存在>"); continue; }
+                    { Console.WriteLine($"[OI] {ah}: not a hexadecimal handle"); continue; }
+                    if (!map.TryGetValue(h, out var o)) { Console.WriteLine($"[OI] 0x{h:X}: <not found>"); continue; }
                     string extra = "";
                     if (o is TableEntry te) extra = $" name=\"{te.Name}\"";
                     else if (o is Entity ent) extra = $" layer={ent.Layer?.Name}";
@@ -1312,7 +1329,7 @@ internal static class Program
             }
             case "layoutdump":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: layoutdump <file.dwg|dxf>"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: layoutdump <file.dwg|dxf>"); return true; }
                 string inP = ResolvePath(a1, baseDir);
                 CadDocument ldoc = inP.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase) ? DxfReader.Read(inP) : DwgReader.Read(inP);
                 Console.WriteLine($"[LD] version={ldoc.Header.Version}");
@@ -1327,7 +1344,7 @@ internal static class Program
             }
             case "dimstyles":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: dimstyles <file.dwg>"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: dimstyles <file.dwg>"); return true; }
                 var ddoc = DwgReader.Read(ResolvePath(a1, baseDir));
                 foreach (var ds in ddoc.DimensionStyles)
                     Console.WriteLine($"[DIMSTYLE] handle=0x{ds.Handle:X} name={ds.Name}");
@@ -1338,7 +1355,7 @@ internal static class Program
             }
             case "inspect":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: inspect <file.dwg> [0x..]"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: inspect <file.dwg> [0x..]"); return true; }
                 var doc = DwgReader.Read(ResolvePath(a1, baseDir));
                 foreach (var ins in doc.ModelSpace.Entities.OfType<Insert>())
                     Console.WriteLine($"[ATT] insert=0x{ins.Handle:X} block={ins.Block?.Name} hasAttrs={ins.HasAttributes} count={ins.Attributes.Count}");
@@ -1356,7 +1373,7 @@ internal static class Program
             }
             case "inspecthatch":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: inspecthatch <file.dwg>"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: inspecthatch <file.dwg>"); return true; }
                 var doc = DwgReader.Read(ResolvePath(a1, baseDir));
                 foreach (var h in doc.ModelSpace.Entities.OfType<Hatch>())
                 {
@@ -1369,7 +1386,7 @@ internal static class Program
             }
             case "inspectdim":
             {
-                if (a1 == null) { Console.Error.WriteLine("用法: inspectdim <file.dwg>"); return true; }
+                if (a1 == null) { Console.Error.WriteLine("Usage: inspectdim <file.dwg>"); return true; }
                 var doc = DwgReader.Read(ResolvePath(a1, baseDir));
                 int dimCount = 0, withBlock = 0, withXdict = 0;
                 foreach (var d in doc.ModelSpace.Entities.OfType<Dimension>().OrderBy(x => x.Handle))
@@ -1387,13 +1404,14 @@ internal static class Program
             }
             case "tablestyle":
             {
-                // 诊断：对比「默认 TableStyle（new CadDocument）」与「读自源文件的 TableStyle」的
-                // 每个 cell style 字段，定位导致 AcDbTableStyle(2E) 的差异字段。
+                // Diagnostics: compare each cell style field of the "default TableStyle (new CadDocument)"
+                // against the "TableStyle read from the source file" to pin down which field(s)
+                // cause the AcDbTableStyle(2E) difference.
                 string tag = a1 ?? "sample";
                 CadDocument srcDoc = a1 == null ? new CadDocument() : DwgReader.Read(ResolvePath(a1, baseDir));
                 var styles = new List<TableStyle>();
                 foreach (var ts in srcDoc.GetCadObjects<TableStyle>()) styles.Add(ts);
-                Console.WriteLine($"[TS] 来源={tag} TableStyle 数量={styles.Count}");
+                Console.WriteLine($"[TS] source={tag} TableStyle count={styles.Count}");
                 foreach (var ts in styles)
                 {
                     Console.WriteLine($"[TS] --- TableStyle \"{ts.Name}\" handle=0x{ts.Handle:X} desc=\"{ts.Description}\" flags=0x{(int)ts.Flags:X} flow={ts.FlowDirection}");
@@ -1412,25 +1430,28 @@ internal static class Program
                         Console.WriteLine($"[TS]        propOverride=0x{(int)cs.PropertyOverrideFlags:X} merge=0x{(int)cs.TableCellStylePropertyFlags:X} bg={cs.BackgroundColor} contentLayout=0x{(int)cs.ContentLayoutFlags:X} marginOverride=0x{(int)cs.MarginOverrideFlags:X}");
                         Console.WriteLine($"[TS]        valDataType={cs.ValueDataType} valUnitType={cs.ValueUnitType} valFmt=\"{cs.ValueFormatString}\" align={cs.Alignment} rotation={cs.Rotation} scale={cs.Scale}");
                         Console.WriteLine($"[TS]        textHeight={cs.TextHeight} color={cs.Color} propFlags=0x{(int)cs.PropertyFlags:X}");
-                        // R2004 row-cell 子集（writeRowCellStyle 实际写出的字段）
+                        // R2004 row-cell subset (the fields writeRowCellStyle actually writes)
                         Console.WriteLine($"[TS]        [R2004] cellAlign={cs.CellAlignment} textColor={cs.TextColor} fillColorOn={cs.IsFillColorOn}");
                         Console.WriteLine($"[TS]        [R2004] borders T={cs.TopBorder.ApplyBorder}/{(int)cs.TopBorder.Type} H={cs.HorizontalInsideBorder.ApplyBorder} B={cs.BottomBorder.ApplyBorder}/{(int)cs.BottomBorder.Type} L={cs.LeftBorder.ApplyBorder} V={cs.VerticalInsideBorder.ApplyBorder} R={cs.RightBorder.ApplyBorder}");
                         ulong tsHandle = tsStyle?.Handle ?? 0UL;
                         string tsDoc = tsStyle?.Document == null ? "null" : tsStyle.Document.GetType().Name;
                         Console.WriteLine($"[TS]        textStyle name=\"{tsStyle?.Name}\" handle=0x{tsHandle:X} doc={tsDoc}");
                     }
-                    // 该文档的文本样式表
+                    // The document's text style table
                     int tsc = 0;
                     foreach (var tstyle in srcDoc.TextStyles) { Console.WriteLine($"[TS]     TEXTSTYLE \"{tstyle.Name}\" handle=0x{tstyle.Handle:X}"); tsc++; }
-                    Console.WriteLine($"[TS]     文档文本样式数量={tsc}");
+                    Console.WriteLine($"[TS]     document text style count={tsc}");
                 }
                 return true;
             }
             case "clonedump":
             {
-                // 克隆保真诊断：转储 5 类关键数据（文字样式/线型/多线样式/填充渐变/表格字体），用于源文件 vs 克隆产物对比
-                // 用法: clonedump <file.dwg> [--clone]   --clone: 不读文件产物，而是内存克隆源文档实体到新文档后转储（定位 clone 时 vs write 时丢失）
-                if (a1 == null) { Console.Error.WriteLine("用法: clonedump <file.dwg> [--clone]"); return true; }
+                // Clone-fidelity diagnostics: dump 5 categories of key data (text styles / linetypes /
+                // multilinetype styles / hatch gradients / table fonts) for source-file vs clone-output comparison.
+                // Usage: clonedump <file.dwg> [--clone]   --clone: instead of reading the file output,
+                // clone the source document's entities in memory into a new document and dump that
+                // (localizes loss at clone time vs write time)
+                if (a1 == null) { Console.Error.WriteLine("Usage: clonedump <file.dwg> [--clone]"); return true; }
                 bool inMemClone = a2 == "--clone";
                 string inP = ResolvePath(a1, baseDir);
                 var srcDoc = DwgReader.Read(inP, new DwgReaderConfiguration { Failsafe = false });
@@ -1443,7 +1464,7 @@ internal static class Program
                     PreseedTables(srcDoc, doc);
                     foreach (Entity e in srcDoc.ModelSpace.Entities)
                         CloneWithDeps(srcDoc, doc, e);
-                    Console.WriteLine("[CD] *** IN-MEMORY CLONE (write 前) ***");
+                    Console.WriteLine("[CD] *** IN-MEMORY CLONE (before write) ***");
                 }
                 Console.WriteLine($"[CD] {inP} version={doc.Header.Version} codepage={doc.Header.CodePage}");
 
@@ -1529,7 +1550,7 @@ internal static class Program
                 foreach (var te in doc.ModelSpace.Entities.OfType<TextEntity>().OrderBy(x => x.Handle))
                     Console.WriteLine($"[TEXT ] 0x{te.Handle:X} style=\"{te.Style?.Name}\" layer={te.Layer?.Name} txt=\"{Trunc(te.Value, 40)}\"");
 
-                Console.WriteLine("[CD] === LTYPE USAGE (模型空间非 Continuous/By* 线型的实体) ===");
+                Console.WriteLine("[CD] === LTYPE USAGE (model-space entities with linetypes other than Continuous/By*) ===");
                 foreach (var e in doc.ModelSpace.Entities.OfType<Entity>().OrderBy(x => x.Handle))
                     if (e.LineType != null && !string.IsNullOrEmpty(e.LineType.Name)
                         && !e.LineType.Name.StartsWith("Continuous", StringComparison.OrdinalIgnoreCase)
@@ -1539,8 +1560,10 @@ internal static class Program
             }
             case "perclass":
             {
-                // 轻量逐类克隆：读源文件 → 按实体类型分组 → 每类克隆到一个全新空白 DWG（保持关联）。
-                // 等价于默认流水线里的 RunPerClassClone，但不做坐标变换/多版本保存，便于单独 AUDIT 验证。
+                // Lightweight per-class clone: read the source -> group by entity type -> clone each
+                // type into a brand-new blank DWG (keep associations).
+                // Equivalent to RunPerClassClone in the default pipeline, but without the coordinate
+                // transform / multi-version save, so AUDIT verification can be done in isolation.
                 string srcP = ResolvePath(a1 ?? "sample.dwg", baseDir);
                 var src = DwgReader.Read(srcP);
                 RunPerClassClone(src, baseDir);
@@ -1548,13 +1571,14 @@ internal static class Program
             }
             case "clonert":
             {
-                // 整文档模型空间克隆往返：读源 → 全新 dst(复制 Version+CodePage) → CloneWithDeps 全部实体 → 写出
-                if (a1 == null || a2 == null) { Console.Error.WriteLine("用法: clonert <in.dwg> <out.dwg> [nocodepage]"); return true; }
+                // Whole-document model-space clone round-trip: read the source -> brand-new dst
+                // (copy Version+CodePage) -> CloneWithDeps all entities -> write out
+                if (a1 == null || a2 == null) { Console.Error.WriteLine("Usage: clonert <in.dwg> <out.dwg> [nocodepage]"); return true; }
                 string inP = ResolvePath(a1, baseDir);
                 var srcDoc = DwgReader.Read(inP);
                 var dstDoc = new CadDocument();
                 dstDoc.Header.Version = srcDoc.Header.Version;
-                // 默认复制 CodePage；传 nocodepage 复现"只复制 Version"的旧流水线行为
+                // Copy CodePage by default; passing nocodepage reproduces the old pipeline behavior of "copying Version only"
                 if (a3 == null || !a3.Equals("nocodepage", StringComparison.OrdinalIgnoreCase))
                     dstDoc.Header.CodePage = srcDoc.Header.CodePage;
                 PreseedTables(srcDoc, dstDoc);
@@ -1570,20 +1594,197 @@ internal static class Program
             }
             case "iobench":
             {
-                // IO 性能基准：独立运行（不依赖 sample.dwg，自生成 10 万实体基准图）
+                // IO performance benchmark: run standalone (no dependency on sample.dwg, generates its own 100k-entity benchmark drawing)
                 RunIoBench(baseDir);
                 PrintReport();
                 return true;
             }
+            case "readbench":
+            {
+                // DWG read phase-breakdown benchmark ([PATCH] DwgReadDiagnostics):
+                //   readbench [in.dwg] [iteration count] [noid] [notype]
+                //   default io_bench/bench_io.dwg, 5 iterations; noid = do not read SummaryInfo; notype = turn off per-type timing
+                RunReadBench(baseDir, a1, a2, a3, a4);
+                return true;
+            }
             default:
-                return false;   // 未命中模式 → 交给默认流程
+                return false;   // No mode matched -> hand off to the default pipeline
+        }
+    }
+
+    // ================= readbench: DWG read phase-breakdown benchmark (decode vs build sub-phases) =================
+    // Depends on the [PATCH] diagnostics class ACadSharp.IO.DwgReadDiagnostics inside the library (internal, hence read via reflection).
+    private static readonly Lazy<Type> _readDiagType = new(() => typeof(CadDocument).Assembly.GetType("ACadSharp.IO.DwgReadDiagnostics"));
+
+    private static void DiagReset()
+    {
+        var t = _readDiagType.Value;
+        t?.GetMethod("Reset", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+    }
+
+    private static long DiagMs(string prop)
+    {
+        var t = _readDiagType.Value;
+        var p = t?.GetProperty(prop, BindingFlags.Public | BindingFlags.Static);
+        return p == null ? -1 : (long)p.GetValue(null);
+    }
+
+    private static int DiagObjCount()
+    {
+        var t = _readDiagType.Value;
+        var p = t?.GetProperty("ObjectCount", BindingFlags.Public | BindingFlags.Static);
+        return p == null ? 0 : (int)Convert.ChangeType(p.GetValue(null), typeof(int));
+    }
+
+    private static void DiagEnableTypeTimers()
+    {
+        var t = _readDiagType.Value;
+        t?.GetMethod("EnableTypeTimers", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+    }
+
+    private static string DiagTop(string method, int n)
+    {
+        var t = _readDiagType.Value;
+        var m = t?.GetMethod(method, BindingFlags.Public | BindingFlags.Static);
+        return m == null ? null : m.Invoke(null, new object[] { n }) as string;
+    }
+
+    private static void RunReadBench(string baseDir, string a1, string a2, string a3, string a4)
+    {
+        // Position-independent flags: noid / notype may appear at any argument position (PowerShell omits empty arguments, so fixed positions are unreliable)
+        bool readId = true, typeTimers = true;
+        var pos = new List<string>();
+        foreach (var a in new[] { a1, a2, a3, a4 })
+        {
+            if (a == null) continue;
+            if (a.Equals("noid", StringComparison.OrdinalIgnoreCase)) { readId = false; continue; }
+            if (a.Equals("notype", StringComparison.OrdinalIgnoreCase)) { typeTimers = false; continue; }
+            pos.Add(a);
+        }
+        a1 = pos.Count > 0 ? pos[0] : null;
+        a2 = pos.Count > 1 ? pos[1] : null;
+        a3 = pos.Count > 2 ? pos[2] : null;
+
+        string path = a1 != null ? ResolvePath(a1, baseDir) : Path.Combine(baseDir, "io_bench", "bench_io.dwg");
+        int iter = a2 != null && int.TryParse(a2, out int n) && n > 0 ? n : 5;
+
+        if (!File.Exists(path)) { Console.Error.WriteLine($"[READBENCH] Benchmark file not found: {path} (run iobench first to generate it)"); return; }
+        long fileSize = new FileInfo(path).Length;
+
+        Console.WriteLine("==========================================================");
+        Console.WriteLine($"  DWG read phase-breakdown benchmark (readbench)");
+        Console.WriteLine($"  File = {path}  ({fileSize / 1024.0 / 1024.0:F2} MB)");
+        Console.WriteLine($"  Iterations = {iter}, ReadSummaryInfo={readId}");
+        Console.WriteLine($"  Run time = {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine("==========================================================\n");
+
+        if (_readDiagType.Value == null)
+            Console.WriteLine("  ⚠️ DwgReadDiagnostics not found (the library lacks the [PATCH] diagnostics) - only the total elapsed time and the progress-event breakdown will be output.\n");
+
+        var totals = new List<long>();
+        var preDecode = new List<long>();
+        var decodes = new List<long>();
+        var tables = new List<long>();
+        var dicts = new List<long>();
+        var tblEntry = new List<long>();
+        var objBuild = new List<long>();
+        var post = new List<long>();
+        var progDecodeSpan = new List<long>();
+        var progBuildSpan = new List<long>();
+        int objCount = 0, entCount = 0;
+        var histogram = new Dictionary<string, int>();
+
+        for (int i = 1; i <= iter; i++)
+        {
+            DiagReset();
+            if (typeTimers) DiagEnableTypeTimers();   // [PERF] Per-type timing (notype = off, measures the pure P1/P2 effect)
+            long ws0 = WsMB();
+            var sw = Stopwatch.StartNew();
+            long? firstEv = null, lastReadEv = null, lastBuildEv = null;
+            int evCount = 0;
+            CadDocument doc = null;
+            try
+            {
+                var reader = new DwgReader(path)
+                {
+                    Configuration = new DwgReaderConfiguration { ReadSummaryInfo = readId }
+                };
+                reader.OnProgress += (s, e) =>
+                {
+                    long now = sw.ElapsedMilliseconds;
+                    if (firstEv == null) firstEv = now;
+                    if (e.Stage == ReadStage.Read) lastReadEv = now; else lastBuildEv = now;
+                    evCount++;
+                };
+                doc = reader.Read();
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                Console.Error.WriteLine($"[READBENCH] Read #{i} failed: {ex.Message}");
+                return;
+            }
+            sw.Stop();
+            long ws1 = WsMB();
+
+            long total = sw.ElapsedMilliseconds;
+            long dPre = DiagMs("PreDecodeMs"), dDec = DiagMs("DecodeMs"), dTbl = DiagMs("TablesMs");
+            long dDict = DiagMs("DictionariesMs"), dTblEnt = DiagMs("TableEntryBuildMs"), dObj = DiagMs("ObjectBuildMs"), dPost = DiagMs("PostBuildMs");
+            objCount = DiagObjCount();
+
+            totals.Add(total); preDecode.Add(dPre); decodes.Add(dDec); tables.Add(dTbl);
+            dicts.Add(dDict); tblEntry.Add(dTblEnt); objBuild.Add(dObj); post.Add(dPost);
+            progDecodeSpan.Add((lastReadEv ?? 0) - (firstEv ?? 0));
+            progBuildSpan.Add((lastBuildEv ?? 0) - (firstEv ?? 0));
+
+            entCount = doc.ModelSpace.Entities.Count;
+            histogram.Clear();
+            foreach (var g in doc.ModelSpace.Entities.GroupBy(e => e.GetType().Name).OrderByDescending(g => g.Count()))
+            {
+                if (!histogram.ContainsKey(g.Key)) histogram[g.Key] = 0;
+                histogram[g.Key] += g.Count();
+            }
+
+            Console.WriteLine($"  Iter {i}: total={total,6} ms | pre={dPre,5} dec={dDec,6} tables={dTbl,5} dict={dDict,4} tblEnt={dTblEnt,4} objBuild={dObj,6} post={dPost,4}" +
+                              $" | progress events dec~{(lastReadEv ?? 0)-(firstEv ?? 0),5} build~{(lastBuildEv ?? 0)-(firstEv ?? 0),6} ev={evCount,7} | memory {ws0:N0}->{ws1:N0} MB");
+            if (typeTimers)
+            {
+                string decTop3 = DiagTop("DecodeTop", 3), buildTop3 = DiagTop("BuildTop", 3);
+                if (decTop3 != null) Console.WriteLine($"      Decode Top 3: {decTop3}");
+                if (buildTop3 != null) Console.WriteLine($"      Build Top 3: {buildTop3}");
+            }
+            doc = null;
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        }
+
+        long Median(List<long> l) { var s = l.OrderBy(x => x).ToList(); return s[s.Count / 2]; }
+
+        Console.WriteLine("\n  ---------- Median ----------");
+        Console.WriteLine($"  Total elapsed   : {Median(totals),7} ms");
+        Console.WriteLine($"  Pre-decode (file/header) : {Median(preDecode),7} ms  ({100.0 * Median(preDecode) / Median(totals):F1}%)");
+        Console.WriteLine($"  Object decode   : {Median(decodes),7} ms  ({100.0 * Median(decodes) / Median(totals):F1}%)");
+        Console.WriteLine($"  Build-tables    : {Median(tables),7} ms  ({100.0 * Median(tables) / Median(totals):F1}%)");
+        Console.WriteLine($"  Build-dictionaries : {Median(dicts),7} ms  ({100.0 * Median(dicts) / Median(totals):F1}%)");
+        Console.WriteLine($"  Build-table entries : {Median(tblEntry),7} ms  ({100.0 * Median(tblEntry) / Median(totals):F1}%)");
+        Console.WriteLine($"  Build-objects   : {Median(objBuild),7} ms  ({100.0 * Median(objBuild) / Median(totals):F1}%)  <- hotspot");
+        Console.WriteLine($"  Finalize (storage/gradient) : {Median(post),7} ms  ({100.0 * Median(post) / Median(totals):F1}%)");
+        Console.WriteLine($"  (progress-event basis: decode~{Median(progDecodeSpan)} ms, build~{Median(progBuildSpan)} ms)");
+        Console.WriteLine($"  Decoded objects : {objCount:N0}, model-space entities = {entCount:N0}");
+        Console.WriteLine("  Entity type histogram : " + string.Join(", ", histogram.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}x{kv.Value:N0}")));
+
+        if (typeTimers)
+        {
+            string decTop10 = DiagTop("DecodeTop", 10), buildTop10 = DiagTop("BuildTop", 10);
+            if (decTop10 != null) Console.WriteLine("  Decode Top 10 by type: " + decTop10);
+            if (buildTop10 != null) Console.WriteLine("  Build Top 10 by type: " + buildTop10);
+            Console.WriteLine("  (Per-type timing is taken from the last iteration)");
         }
     }
 
     private static string ResolvePath(string p, string baseDir)
         => Path.IsPathRooted(p) ? p : Path.Combine(baseDir, p);
 
-    // ================= 工具方法 =================
+    // ================= Utility methods =================
     private static long WsMB()
     {
         using var p = Process.GetCurrentProcess();
@@ -1613,7 +1814,7 @@ internal static class Program
     }
 }
 
-/// <summary>单项结果。</summary>
+/// <summary>A single item's result.</summary>
 internal sealed class MethodResult
 {
     public string Name { get; }
